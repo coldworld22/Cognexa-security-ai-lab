@@ -1,17 +1,23 @@
-import express from "express";
+import { createApp } from "./app";
+import { createAppContext } from "./bootstrap/create-app-context";
+import { env } from "./config/env";
 
-const app = express();
+async function bootstrap(): Promise<void> {
+  const context = await createAppContext();
+  const app = createApp(context);
 
-app.get("/", (_, res) => {
-  res.json({
-    application: "Security AI Lab",
-    status: "running",
-    version: "0.0.1"
+  app.listen(env.PORT, () => {
+    context.logger.info(
+      {
+        port: env.PORT,
+        environment: env.NODE_ENV
+      },
+      "Security AI Lab backend started"
+    );
   });
-});
+}
 
-const PORT = 5000;
-
-app.listen(PORT, () => {
-  console.log(`Security AI Lab started on port ${PORT}`);
+bootstrap().catch((error: unknown) => {
+  console.error("Failed to bootstrap backend", error);
+  process.exit(1);
 });
