@@ -5,9 +5,9 @@ import { ToolExecutionService } from "../../services/tool-execution/tool-executi
 export class ToolController {
   constructor(private readonly tools: ToolExecutionService) {}
 
-  list = async (_request: Request, response: Response) => {
+  list = async (request: Request, response: Response) => {
     response.json({
-      tools: this.tools.listTools()
+      tools: await this.tools.listTools(request.auth!)
     });
   };
 }

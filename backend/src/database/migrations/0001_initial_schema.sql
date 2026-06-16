@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   chunk_index INTEGER NOT NULL,
   content TEXT NOT NULL,
-  vector VECTOR(8) NOT NULL,
+  vector VECTOR NOT NULL,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   objective TEXT NOT NULL,
   status TEXT NOT NULL,
   result TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );

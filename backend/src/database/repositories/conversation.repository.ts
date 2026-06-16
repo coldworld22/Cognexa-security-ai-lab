@@ -4,6 +4,7 @@ import { BaseRepository } from "./base.repository";
 import { ConversationEntity } from "../entities/conversation.entity";
 
 interface CreateConversationInput {
+  workspaceId: string;
   userId: string;
   title: string;
   modelProvider: string;
@@ -14,6 +15,7 @@ export class ConversationRepository extends BaseRepository {
   async create(input: CreateConversationInput): Promise<ConversationEntity> {
     const conversation: ConversationEntity = {
       id: randomUUID(),
+      workspaceId: input.workspaceId,
       userId: input.userId,
       title: input.title,
       modelProvider: input.modelProvider,
@@ -24,10 +26,21 @@ export class ConversationRepository extends BaseRepository {
     };
 
     await this.pool.query(
-      `INSERT INTO conversations (id, user_id, title, model_provider, model_name, metadata, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+      `INSERT INTO conversations (
+         id,
+         workspace_id,
+         user_id,
+         title,
+         model_provider,
+         model_name,
+         metadata,
+         created_at,
+         updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
       [
         conversation.id,
+        conversation.workspaceId,
         conversation.userId,
         conversation.title,
         conversation.modelProvider,
@@ -41,17 +54,18 @@ export class ConversationRepository extends BaseRepository {
     return conversation;
   }
 
-  async listByUser(userId: string): Promise<ConversationEntity[]> {
+  async listByWorkspace(workspaceId: string): Promise<ConversationEntity[]> {
     const result = await this.pool.query(
-      `SELECT id, user_id, title, model_provider, model_name, metadata, created_at, updated_at
+      `SELECT id, workspace_id, user_id, title, model_provider, model_name, metadata, created_at, updated_at
        FROM conversations
-       WHERE user_id = $1
+       WHERE workspace_id = $1
        ORDER BY updated_at DESC`,
-      [userId]
+      [workspaceId]
     );
 
     return result.rows.map((row) => ({
       id: row.id,
+      workspaceId: row.workspace_id,
       userId: row.user_id,
       title: row.title,
       modelProvider: row.model_provider,
@@ -64,7 +78,7 @@ export class ConversationRepository extends BaseRepository {
 
   async findById(id: string): Promise<ConversationEntity | null> {
     const result = await this.pool.query(
-      `SELECT id, user_id, title, model_provider, model_name, metadata, created_at, updated_at
+      `SELECT id, workspace_id, user_id, title, model_provider, model_name, metadata, created_at, updated_at
        FROM conversations
        WHERE id = $1
        LIMIT 1`,
@@ -78,6 +92,7 @@ export class ConversationRepository extends BaseRepository {
     const row = result.rows[0];
     return {
       id: row.id,
+      workspaceId: row.workspace_id,
       userId: row.user_id,
       title: row.title,
       modelProvider: row.model_provider,
@@ -88,11 +103,51 @@ export class ConversationRepository extends BaseRepository {
     };
   }
 
+  async deleteById(id: string, workspaceId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `DELETE FROM conversations
+       WHERE id = $1 AND workspace_id = $2
+       RETURNING id`,
+      [id, workspaceId]
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async count(): Promise<number> {
     const result = await this.pool.query(
       "SELECT COUNT(*)::int AS count FROM conversations"
     );
     return result.rows[0]?.count ?? 0;
+  }
+
+  async countCreatedSince(interval: string): Promise<number> {
+    const result = await this.pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM conversations
+       WHERE created_at >= NOW() - $1::interval`,
+      [interval]
+    );
+    return result.rows[0]?.count ?? 0;
+  }
+
+  async getUsageByProvider(): Promise<
+    {
+      provider: string;
+      conversations: number;
+    }[]
+  > {
+    const result = await this.pool.query(
+      `SELECT model_provider AS provider, COUNT(*)::int AS conversations
+       FROM conversations
+       GROUP BY model_provider
+       ORDER BY conversations DESC, provider ASC`
+    );
+
+    return result.rows.map((row) => ({
+      provider: row.provider as string,
+      conversations: row.conversations as number
+    }));
   }
 
   async touch(id: string): Promise<void> {

@@ -5,6 +5,14 @@ export interface VectorSearchResult {
   metadata: Record<string, unknown>;
 }
 
+export interface VectorSearchOptions {
+  dimensions?: number;
+  embeddingModel?: string;
+  embeddingProvider?: string;
+  workspaceId?: string;
+  minScore?: number;
+}
+
 export abstract class BaseVectorStore {
   abstract insert(
     id: string,
@@ -13,5 +21,9 @@ export abstract class BaseVectorStore {
     metadata?: Record<string, unknown>
   ): Promise<void>;
 
-  abstract search(vector: number[], limit: number): Promise<VectorSearchResult[]>;
+  abstract search(
+    vector: number[],
+    limit: number,
+    options?: VectorSearchOptions
+  ): Promise<VectorSearchResult[]>;
 }

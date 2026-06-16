@@ -1,6 +1,7 @@
 import { BaseEntity } from "./base.entity";
 
 export interface FileEntity extends BaseEntity {
+  workspaceId: string;
   userId: string;
   fileName: string;
   mimeType: string;

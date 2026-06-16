@@ -20,6 +20,10 @@ export function createChatRoutes(controller: ChatController) {
     ),
     asyncHandler(controller.createConversation)
   );
+  router.delete(
+    "/conversations/:conversationId",
+    asyncHandler(controller.deleteConversation)
+  );
   router.get(
     "/conversations/:conversationId/messages",
     asyncHandler(controller.listMessages)

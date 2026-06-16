@@ -10,13 +10,6 @@ export function createAuthRoutes(controller: AuthController) {
 
   router.post(
     "/register",
-    validateBody(
-      z.object({
-        email: z.string().email(),
-        password: z.string().min(8),
-        displayName: z.string().min(2)
-      })
-    ),
     asyncHandler(controller.register)
   );
 
@@ -24,7 +17,7 @@ export function createAuthRoutes(controller: AuthController) {
     "/login",
     validateBody(
       z.object({
-        email: z.string().email(),
+        username: z.string().min(1),
         password: z.string().min(8)
       })
     ),

@@ -6,6 +6,7 @@ import {
   LLMCompletionResponse,
   LLMStreamChunk
 } from "../base-llm-provider";
+import { AppError } from "../../utils/app-error";
 
 interface OpenAICompatibleProviderOptions {
   providerId: string;
@@ -45,7 +46,30 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       });
 
       if (!response.ok) {
-        throw new Error(`Provider returned ${response.status}`);
+        const body = await response.text();
+        if (response.status === 404) {
+          throw new AppError(
+            `Model '${payload.model}' is not installed for provider '${this.providerId}'. Pull it locally or choose an installed model.`,
+            404,
+            {
+              provider: this.providerId,
+              model: payload.model,
+              endpoint: this.baseUrl,
+              body
+            }
+          );
+        }
+
+        throw new AppError(
+          `LLM provider '${this.providerId}' returned ${response.status}.`,
+          502,
+          {
+            provider: this.providerId,
+            model: payload.model,
+            endpoint: this.baseUrl,
+            body
+          }
+        );
       }
 
       const json = z
@@ -73,15 +97,8 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
           outputTokens: json.usage?.completion_tokens ?? 0
         }
       };
-    } catch {
-      const content = `Stubbed ${this.providerId} response for model ${payload.model}. Wire a local OpenAI-compatible endpoint to ${this.baseUrl} to enable live inference.`;
-      return {
-        content,
-        usage: {
-          inputTokens: request.messages.length * 16,
-          outputTokens: Math.ceil(content.length / 4)
-        }
-      };
+    } catch (error) {
+      throw this.normalizeProviderError(error, payload.model);
     }
   }
 
@@ -101,7 +118,30 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       });
 
       if (!response.ok || !response.body) {
-        throw new Error(`Provider returned ${response.status}`);
+        const body = response.body ? undefined : await response.text();
+        if (response.status === 404) {
+          throw new AppError(
+            `Model '${payload.model}' is not installed for provider '${this.providerId}'. Pull it locally or choose an installed model.`,
+            404,
+            {
+              provider: this.providerId,
+              model: payload.model,
+              endpoint: this.baseUrl,
+              body
+            }
+          );
+        }
+
+        throw new AppError(
+          `LLM provider '${this.providerId}' returned ${response.status} while streaming.`,
+          502,
+          {
+            provider: this.providerId,
+            model: payload.model,
+            endpoint: this.baseUrl,
+            body
+          }
+        );
       }
 
       const decoder = new TextDecoder();
@@ -190,20 +230,8 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
           }
         }
       }
-    } catch {
-      const response = await this.generate(request);
-      const segments = response.content.split(" ");
-
-      for (const segment of segments) {
-        yield {
-          delta: `${segment} `
-        };
-      }
-
-      yield {
-        delta: "",
-        done: true
-      };
+    } catch (error) {
+      throw this.normalizeProviderError(error, payload.model);
     }
   }
 
@@ -212,5 +240,34 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
       model: request.model || this.defaultModel,
       messages: request.messages
     };
+  }
+
+  private normalizeProviderError(error: unknown, model: string): AppError {
+    if (error instanceof AppError) {
+      return error;
+    }
+
+    if (error instanceof Error) {
+      return new AppError(
+        `LLM provider '${this.providerId}' is unreachable at ${this.baseUrl}.`,
+        502,
+        {
+          provider: this.providerId,
+          model,
+          endpoint: this.baseUrl,
+          reason: error.message
+        }
+      );
+    }
+
+    return new AppError(
+      `LLM provider '${this.providerId}' is unavailable.`,
+      502,
+      {
+        provider: this.providerId,
+        model,
+        endpoint: this.baseUrl
+      }
+    );
   }
 }

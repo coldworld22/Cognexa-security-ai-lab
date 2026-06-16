@@ -4,6 +4,20 @@
 
 :root {
   color-scheme: light;
+  --bg-canvas: #eef4f8;
+  --bg-wash: #f8fbfd;
+  --surface: rgba(255, 255, 255, 0.82);
+  --surface-strong: #ffffff;
+  --surface-soft: #f3f7fa;
+  --border-subtle: rgba(15, 23, 42, 0.08);
+  --border-strong: rgba(15, 23, 42, 0.14);
+  --text-primary: #111827;
+  --text-secondary: rgba(17, 24, 39, 0.68);
+  --text-tertiary: rgba(17, 24, 39, 0.46);
+  --brand-sky: #15a7f3;
+  --brand-blue: #0e7dd6;
+  --brand-deep: #0b3b63;
+  --brand-ink: #0b1220;
 }
 
 html {
@@ -12,6 +26,10 @@ html {
 
 body {
   font-family: var(--font-heading), sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(196, 224, 248, 0.72) 0%, rgba(238, 244, 248, 0.94) 34%, rgba(248, 251, 253, 1) 100%);
+  color: var(--text-primary);
+  overflow-x: hidden;
 }
 
 code,
@@ -22,6 +40,19 @@ pre,
 
 * {
   box-sizing: border-box;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.48), rgba(255, 255, 255, 0.48)),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.018) 1px, transparent 1px),
+    linear-gradient(rgba(15, 23, 42, 0.018) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+  mask-image: radial-gradient(circle at center, black, transparent 82%);
 }
 
 ::selection {

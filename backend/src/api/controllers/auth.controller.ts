@@ -5,9 +5,9 @@ import { AuthService } from "../../services/auth/auth.service";
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  register = async (request: Request, response: Response) => {
-    const result = await this.auth.register(request.body);
-    response.status(201).json(result);
+  register = async (_request: Request, response: Response) => {
+    const result = await this.auth.register();
+    response.status(403).json(result);
   };
 
   login = async (request: Request, response: Response) => {

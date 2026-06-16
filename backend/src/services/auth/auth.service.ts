@@ -3,19 +3,17 @@ import jwt from "jsonwebtoken";
 import { RedisClientType } from "redis";
 import { randomUUID } from "crypto";
 
+import { CanonicalUserRole } from "../../authorization/authorization.types";
 import { env } from "../../config/env";
+import { normalizeUserRole } from "../../authorization/role-permission-matrix";
 import { UserEntity } from "../../database/entities/user.entity";
 import { UserRepository } from "../../database/repositories/user.repository";
 import { AppError } from "../../utils/app-error";
-
-interface RegisterInput {
-  email: string;
-  password: string;
-  displayName: string;
-}
+import { WorkspaceSession, WorkspaceSummary } from "../../workspaces/workspace.types";
+import { WorkspaceService } from "../workspace/workspace.service";
 
 interface LoginInput {
-  email: string;
+  username: string;
   password: string;
 }
 
@@ -23,52 +21,67 @@ export interface AuthenticatedUser {
   id: string;
   email: string;
   displayName: string;
-  role: UserEntity["role"];
+  role: CanonicalUserRole;
   preferences: UserEntity["preferences"];
+  currentWorkspaceId?: string;
   lastLoginAt?: string;
+}
+
+export interface AuthenticatedSession extends WorkspaceSession {
+  user: AuthenticatedUser;
+  tokens: {
+    accessToken: string;
+    refreshToken: string;
+  };
 }
 
 export class AuthService {
   constructor(
     private readonly users: UserRepository,
-    private readonly redis: RedisClientType
+    private readonly redis: RedisClientType,
+    private readonly workspaces: WorkspaceService
   ) {}
 
-  async register(input: RegisterInput) {
-    const existingUser = await this.users.findByEmail(input.email);
-
-    if (existingUser) {
-      throw new AppError("A user with this email already exists", 409);
-    }
-
-    const passwordHash = await bcrypt.hash(input.password, 12);
-    const user = await this.users.create({
-      email: input.email,
-      displayName: input.displayName,
-      passwordHash
+  async initialize(): Promise<void> {
+    const passwordHash = await bcrypt.hash(env.ADMIN_PASSWORD, 12);
+    const admin = await this.users.upsert({
+      email: env.ADMIN_LOGIN,
+      displayName: env.ADMIN_DISPLAY_NAME,
+      passwordHash,
+      role: "super_admin"
     });
-
-    return {
-      user: this.toAuthenticatedUser(user),
-      tokens: await this.issueTokens(user.id, user.email)
-    };
+    await this.workspaces.ensureProvisionedForUser(admin);
   }
 
   async login(input: LoginInput) {
-    const user = await this.users.findByEmail(input.email);
+    const user = await this.users.findByEmail(input.username);
     if (!user) {
-      throw new AppError("Invalid email or password", 401);
+      throw new AppError("Invalid username or password", 401);
     }
 
     const isValidPassword = await bcrypt.compare(input.password, user.passwordHash);
     if (!isValidPassword) {
-      throw new AppError("Invalid email or password", 401);
+      throw new AppError("Invalid username or password", 401);
     }
 
+    await this.users.updateLastLogin(user.id);
+    const nextUser = (await this.users.findById(user.id)) ?? {
+      ...user,
+      lastLoginAt: new Date().toISOString()
+    };
+    const workspaceSession = await this.workspaces.listSessionForUser(nextUser);
+
     return {
-      user: this.toAuthenticatedUser(user),
+      user: this.toAuthenticatedUser(nextUser),
+      currentWorkspace: workspaceSession.currentWorkspace,
+      workspaces: workspaceSession.workspaces,
+      pendingInvitations: workspaceSession.pendingInvitations,
       tokens: await this.issueTokens(user.id, user.email)
     };
+  }
+
+  async register() {
+    throw new AppError("Registration is disabled for this deployment", 403);
   }
 
   async refresh(refreshToken: string) {
@@ -91,8 +104,9 @@ export class AuthService {
       id: user.id,
       email: user.email,
       displayName: user.displayName,
-      role: user.role,
+      role: normalizeUserRole(user.role),
       preferences: user.preferences,
+      currentWorkspaceId: user.currentWorkspaceId,
       lastLoginAt: user.lastLoginAt
     };
   }

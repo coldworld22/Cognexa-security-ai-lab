@@ -26,6 +26,14 @@ security-ai-lab/
 3. Start infrastructure with `docker compose up -d postgres redis`.
 4. Run `npm run dev:backend` and `npm run dev:frontend`.
 
+## Startup behavior
+
+- Backend startup now creates runtime storage directories automatically.
+- PostgreSQL readiness is checked before the API starts serving traffic.
+- SQL migrations in `backend/src/database/migrations` are applied automatically on boot.
+- Redis readiness is checked before the backend finishes bootstrapping.
+- The backend handles `SIGINT` and `SIGTERM` with graceful shutdown of HTTP, Redis, and PostgreSQL connections.
+
 ## Current state
 
 This repository now contains a production-grade initial skeleton:
@@ -36,3 +44,10 @@ This repository now contains a production-grade initial skeleton:
 - Vector store abstraction for `pgvector` and Qdrant.
 - Next.js admin and chat UI shell ready to connect to live APIs.
 - Docker compose baseline for self-hosted deployment.
+
+## RAG requirements
+
+- TXT, PDF, and DOCX uploads are now parsed with real extraction logic.
+- RAG ingestion and retrieval now use an OpenAI-compatible embeddings endpoint instead of placeholder vectors.
+- Set `LOCAL_EMBEDDING_BASE_URL` and `DEFAULT_EMBEDDING_MODEL` in `backend/.env`.
+- The default example assumes a local embedding model such as `nomic-embed-text`.

@@ -3,6 +3,7 @@ import { BaseEntity } from "./base.entity";
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 export interface MessageEntity extends BaseEntity {
+  workspaceId: string;
   conversationId: string;
   role: MessageRole;
   content: string;

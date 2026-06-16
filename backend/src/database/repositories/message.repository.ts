@@ -4,6 +4,7 @@ import { BaseRepository } from "./base.repository";
 import { MessageEntity, MessageRole } from "../entities/message.entity";
 
 interface CreateMessageInput {
+  workspaceId: string;
   conversationId: string;
   role: MessageRole;
   content: string;
@@ -15,6 +16,7 @@ export class MessageRepository extends BaseRepository {
   async create(input: CreateMessageInput): Promise<MessageEntity> {
     const message: MessageEntity = {
       id: randomUUID(),
+      workspaceId: input.workspaceId,
       conversationId: input.conversationId,
       role: input.role,
       content: input.content,
@@ -25,10 +27,21 @@ export class MessageRepository extends BaseRepository {
     };
 
     await this.pool.query(
-      `INSERT INTO messages (id, conversation_id, role, content, tool_name, metadata, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+      `INSERT INTO messages (
+         id,
+         workspace_id,
+         conversation_id,
+         role,
+         content,
+         tool_name,
+         metadata,
+         created_at,
+         updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
       [
         message.id,
+        message.workspaceId,
         message.conversationId,
         message.role,
         message.content,
@@ -44,7 +57,7 @@ export class MessageRepository extends BaseRepository {
 
   async listByConversation(conversationId: string): Promise<MessageEntity[]> {
     const result = await this.pool.query(
-      `SELECT id, conversation_id, role, content, tool_name, metadata, created_at, updated_at
+      `SELECT id, workspace_id, conversation_id, role, content, tool_name, metadata, created_at, updated_at
        FROM messages
        WHERE conversation_id = $1
        ORDER BY created_at ASC`,
@@ -53,6 +66,7 @@ export class MessageRepository extends BaseRepository {
 
     return result.rows.map((row) => ({
       id: row.id,
+      workspaceId: row.workspace_id,
       conversationId: row.conversation_id,
       role: row.role,
       content: row.content,
@@ -63,19 +77,25 @@ export class MessageRepository extends BaseRepository {
     }));
   }
 
-  async listRecentByUser(userId: string, limit = 10): Promise<MessageEntity[]> {
+  async listRecentByWorkspaceAndUser(
+    workspaceId: string,
+    userId: string,
+    limit = 10
+  ): Promise<MessageEntity[]> {
     const result = await this.pool.query(
-      `SELECT m.id, m.conversation_id, m.role, m.content, m.tool_name, m.metadata, m.created_at, m.updated_at
+      `SELECT m.id, m.workspace_id, m.conversation_id, m.role, m.content, m.tool_name, m.metadata, m.created_at, m.updated_at
        FROM messages m
        INNER JOIN conversations c ON c.id = m.conversation_id
-       WHERE c.user_id = $1
+       WHERE c.workspace_id = $1
+         AND c.user_id = $2
        ORDER BY m.created_at DESC
-       LIMIT $2`,
-      [userId, limit]
+       LIMIT $3`,
+      [workspaceId, userId, limit]
     );
 
     return result.rows.map((row) => ({
       id: row.id,
+      workspaceId: row.workspace_id,
       conversationId: row.conversation_id,
       role: row.role,
       content: row.content,

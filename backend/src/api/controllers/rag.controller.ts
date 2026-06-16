@@ -13,7 +13,7 @@ export class RagController {
     }
 
     const result = await this.rag.ingestDocument({
-      userId: request.auth!.userId,
+      actor: request.auth!,
       originalName: file.originalname,
       mimeType: file.mimetype,
       sizeBytes: file.size,
@@ -24,7 +24,11 @@ export class RagController {
   };
 
   retrieve = async (request: Request, response: Response) => {
-    const matches = await this.rag.retrieve(request.body.query as string, request.body.limit as number);
+    const matches = await this.rag.retrieve(
+      request.auth!,
+      request.body.query as string,
+      request.body.limit as number
+    );
     response.json({ matches });
   };
 }

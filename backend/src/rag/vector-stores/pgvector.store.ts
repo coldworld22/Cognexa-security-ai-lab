@@ -1,6 +1,10 @@
 import { Pool } from "pg";
 
-import { BaseVectorStore, VectorSearchResult } from "../base-vector-store";
+import {
+  BaseVectorStore,
+  VectorSearchOptions,
+  VectorSearchResult
+} from "../base-vector-store";
 
 export class PgVectorStore extends BaseVectorStore {
   constructor(
@@ -32,20 +36,62 @@ export class PgVectorStore extends BaseVectorStore {
     );
   }
 
-  async search(vector: number[], limit: number): Promise<VectorSearchResult[]> {
+  async search(
+    vector: number[],
+    limit: number,
+    options: VectorSearchOptions = {}
+  ): Promise<VectorSearchResult[]> {
+    const clauses = ["vector_dims(e.vector) = $2"];
+    const params: Array<string | number> = [`[${vector.join(",")}]`, options.dimensions ?? vector.length];
+
+    if (options.embeddingModel) {
+      params.push(options.embeddingModel);
+      clauses.push(`e.metadata->>'embeddingModel' = $${params.length}`);
+    }
+
+    if (options.embeddingProvider) {
+      params.push(options.embeddingProvider);
+      clauses.push(`e.metadata->>'embeddingProvider' = $${params.length}`);
+    }
+
+    if (options.workspaceId) {
+      params.push(options.workspaceId);
+      clauses.push(`e.workspace_id = $${params.length}`);
+    }
+
+    if (typeof options.minScore === "number") {
+      params.push(options.minScore);
+      clauses.push(`1 - (e.vector <=> $1::vector) >= $${params.length}`);
+    }
+
+    params.push(limit);
+
     const result = await this.pool.query(
-      `SELECT id, content, metadata, 1 - (vector <=> $1::vector) AS score
-       FROM embeddings
-       ORDER BY vector <=> $1::vector
-       LIMIT $2`,
-      [`[${vector.join(",")}]`, limit]
+      `SELECT e.id,
+              e.file_id,
+              e.chunk_index,
+              e.content,
+              e.metadata,
+              f.file_name,
+              1 - (e.vector <=> $1::vector) AS score
+       FROM embeddings e
+       INNER JOIN files f ON f.id = e.file_id
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY e.vector <=> $1::vector
+       LIMIT $${params.length}`,
+      params
     );
 
     return result.rows.map((row) => ({
       id: row.id,
       content: row.content,
       score: Number(row.score),
-      metadata: row.metadata ?? {}
+      metadata: {
+        ...(row.metadata ?? {}),
+        fileId: row.file_id,
+        fileName: row.file_name,
+        chunkIndex: row.chunk_index
+      }
     }));
   }
 }

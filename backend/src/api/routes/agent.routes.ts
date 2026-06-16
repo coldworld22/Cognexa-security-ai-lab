@@ -3,10 +3,34 @@ import { z } from "zod";
 
 import { AgentController } from "../controllers/agent.controller";
 import { asyncHandler } from "../../utils/async-handler";
-import { validateBody } from "../middlewares/validate.middleware";
+import {
+  validateBody,
+  validateParams,
+  validateQuery
+} from "../middlewares/validate.middleware";
 
 export function createAgentRoutes(controller: AgentController) {
   const router = Router();
+
+  router.get(
+    "/tasks",
+    validateQuery(
+      z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(20)
+      })
+    ),
+    asyncHandler(controller.listTasks)
+  );
+
+  router.get(
+    "/tasks/:taskId",
+    validateParams(
+      z.object({
+        taskId: z.string().uuid()
+      })
+    ),
+    asyncHandler(controller.getTask)
+  );
 
   router.post(
     "/execute",

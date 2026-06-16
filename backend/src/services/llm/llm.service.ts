@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { AccessContext } from "../../authorization/authorization.types";
 import {
   LLMCompletionRequest,
   LLMMessage,
@@ -48,11 +49,22 @@ export class LLMService {
     return provider.generateStructured(request, schema);
   }
 
-  async callTool(toolName: string, input: Record<string, unknown>, taskId?: string) {
-    return this.tools.execute(toolName, input, taskId);
+  async callTool(
+    actor: AccessContext,
+    toolName: string,
+    input: Record<string, unknown>,
+    taskId?: string
+  ) {
+    return this.tools.execute(toolName, input, {
+      actor,
+      taskId,
+      resource: `llm.tools.${toolName}`,
+      action: "call_tool_from_llm",
+      reason: `Tool '${toolName}' requires 'tools' permission`
+    });
   }
 
-  listProviders() {
+  async listProviders() {
     return this.providerFactory.listProviders();
   }
 }

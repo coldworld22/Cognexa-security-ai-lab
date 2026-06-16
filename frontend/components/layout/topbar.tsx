@@ -3,6 +3,7 @@ import { Activity, LogOut, Shield, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { APP_NAME } from "@/lib/branding";
 
 interface TopbarProps {
   userName: string;
@@ -22,11 +23,11 @@ export function Topbar({
       <div>
         <Badge className="bg-ember/10 text-ember">Live Workspace</Badge>
         <h2 className="mt-3 text-3xl font-semibold tracking-tight text-ink">
-          Connected control plane for local-first AI workflows
+          {APP_NAME} workspace for local-first AI workflows
         </h2>
         <p className="mt-2 max-w-3xl text-sm text-black/65">
-          Signed in as {userName}. The workspace is pulling live providers, tools, memory context, and conversations
-          from the backend.
+          Signed in as {userName}. {APP_NAME} is pulling live providers, tools, memory context,
+          and conversations from the backend.
         </p>
       </div>
 

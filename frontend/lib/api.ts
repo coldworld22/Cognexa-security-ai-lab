@@ -1,12 +1,21 @@
 "use client";
 
 import {
+  AgentDefinition,
+  AgentExecutionResult,
+  AgentTaskDetail,
+  AgentTaskPlanStep,
+  AgentTaskSummary,
+  AdminDashboard,
   AuthenticatedUser,
   ChatMessage,
   ConversationSummary,
   LlmProviderCatalog,
   MemoryContext,
-  ToolDescriptor
+  ToolDescriptor,
+  WorkspaceInvitation,
+  WorkspaceRole,
+  WorkspaceSummary
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api/v1";
@@ -20,12 +29,35 @@ export interface SessionTokens {
 export interface AppSession {
   user: AuthenticatedUser;
   tokens: SessionTokens;
+  currentWorkspace: WorkspaceSummary | null;
+  workspaces: WorkspaceSummary[];
+  pendingInvitations: WorkspaceInvitation[];
+}
+
+export interface ExecuteAgentPayload {
+  name: string;
+  description: string;
+  instructions: string;
+  enabledTools: string[];
+  objective: string;
+  conversationId?: string;
+}
+
+export interface ExecuteAgentResponse extends AgentTaskDetail {
+  agent: AgentDefinition;
+  plan: AgentTaskPlanStep[];
+  result: AgentExecutionResult | null;
 }
 
 interface AuthPayload {
-  email: string;
+  username: string;
   password: string;
-  displayName?: string;
+}
+
+interface WorkspaceSessionPayload {
+  currentWorkspace: WorkspaceSummary;
+  workspaces: WorkspaceSummary[];
+  pendingInvitations: WorkspaceInvitation[];
 }
 
 function isBrowser(): boolean {
@@ -43,7 +75,14 @@ export function getStoredSession(): AppSession | null {
   }
 
   try {
-    return JSON.parse(raw) as AppSession;
+    const parsed = JSON.parse(raw) as Partial<AppSession>;
+    return {
+      user: parsed.user as AuthenticatedUser,
+      tokens: parsed.tokens as SessionTokens,
+      currentWorkspace: parsed.currentWorkspace ?? null,
+      workspaces: parsed.workspaces ?? [],
+      pendingInvitations: parsed.pendingInvitations ?? []
+    };
   } catch {
     return null;
   }
@@ -110,7 +149,8 @@ async function refreshSession(session: AppSession): Promise<AppSession | null> {
 async function requestJson<T>(
   path: string,
   init: RequestInit = {},
-  authenticated = true
+  authenticated = true,
+  includeWorkspaceHeader = true
 ): Promise<T> {
   let session = authenticated ? getStoredSession() : null;
   const headers = new Headers(init.headers);
@@ -121,6 +161,9 @@ async function requestJson<T>(
     }
 
     headers.set("Authorization", `Bearer ${session.tokens.accessToken}`);
+    if (includeWorkspaceHeader && session.currentWorkspace?.id) {
+      headers.set("X-Workspace-Id", session.currentWorkspace.id);
+    }
   }
 
   if (!headers.has("Content-Type") && init.body && !(init.body instanceof FormData)) {
@@ -149,13 +192,30 @@ async function requestJson<T>(
     throw new Error(await parseError(response));
   }
 
-  return (await response.json()) as T;
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return undefined as T;
+  }
+
+  const body = await response.text();
+  if (!body) {
+    return undefined as T;
+  }
+
+  return JSON.parse(body) as T;
 }
 
 export async function login(payload: AuthPayload): Promise<AppSession> {
   const response = await requestJson<{
     user: AuthenticatedUser;
     tokens: SessionTokens;
+    currentWorkspace?: WorkspaceSummary;
+    workspaces?: WorkspaceSummary[];
+    pendingInvitations?: WorkspaceInvitation[];
   }>(
     "/auth/login",
     {
@@ -167,7 +227,10 @@ export async function login(payload: AuthPayload): Promise<AppSession> {
 
   const session: AppSession = {
     user: response.user,
-    tokens: response.tokens
+    tokens: response.tokens,
+    currentWorkspace: response.currentWorkspace ?? null,
+    workspaces: response.workspaces ?? [],
+    pendingInvitations: response.pendingInvitations ?? []
   };
   storeSession(session);
   return session;
@@ -177,6 +240,9 @@ export async function register(payload: AuthPayload): Promise<AppSession> {
   const response = await requestJson<{
     user: AuthenticatedUser;
     tokens: SessionTokens;
+    currentWorkspace?: WorkspaceSummary;
+    workspaces?: WorkspaceSummary[];
+    pendingInvitations?: WorkspaceInvitation[];
   }>(
     "/auth/register",
     {
@@ -188,10 +254,64 @@ export async function register(payload: AuthPayload): Promise<AppSession> {
 
   const session: AppSession = {
     user: response.user,
-    tokens: response.tokens
+    tokens: response.tokens,
+    currentWorkspace: response.currentWorkspace ?? null,
+    workspaces: response.workspaces ?? [],
+    pendingInvitations: response.pendingInvitations ?? []
   };
   storeSession(session);
   return session;
+}
+
+export async function listWorkspaceSession(): Promise<WorkspaceSessionPayload> {
+  return requestJson<WorkspaceSessionPayload>("/workspaces", {}, true, false);
+}
+
+export async function createWorkspace(payload: {
+  name: string;
+  organizationName?: string;
+}): Promise<WorkspaceSessionPayload> {
+  return requestJson<WorkspaceSessionPayload>("/workspaces", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function switchWorkspace(
+  workspaceId: string
+): Promise<WorkspaceSessionPayload> {
+  return requestJson<WorkspaceSessionPayload>("/workspaces/switch", {
+    method: "POST",
+    body: JSON.stringify({
+      workspaceId
+    })
+  });
+}
+
+export async function inviteWorkspaceMember(payload: {
+  email: string;
+  role: WorkspaceRole;
+}): Promise<WorkspaceInvitation> {
+  const response = await requestJson<{ invitation: WorkspaceInvitation }>(
+    "/workspaces/current/invitations",
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+
+  return response.invitation;
+}
+
+export async function acceptWorkspaceInvitation(
+  invitationId: string
+): Promise<WorkspaceSessionPayload> {
+  return requestJson<WorkspaceSessionPayload>(
+    `/workspaces/invitations/${invitationId}/accept`,
+    {
+      method: "POST"
+    }
+  );
 }
 
 export async function listConversations(): Promise<ConversationSummary[]> {
@@ -214,6 +334,15 @@ export async function createConversation(payload: {
     }
   );
   return response.conversation;
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  await requestJson<void>(
+    `/chat/conversations/${conversationId}`,
+    {
+      method: "DELETE"
+    }
+  );
 }
 
 export async function listMessages(conversationId: string): Promise<ChatMessage[]> {
@@ -239,6 +368,30 @@ export async function listProviders(): Promise<LlmProviderCatalog[]> {
   return response.providers;
 }
 
+export async function listAgentTasks(limit = 12): Promise<AgentTaskSummary[]> {
+  const response = await requestJson<{ tasks: AgentTaskSummary[] }>(
+    `/agents/tasks?limit=${limit}`
+  );
+  return response.tasks;
+}
+
+export async function getAgentTask(taskId: string): Promise<AgentTaskDetail> {
+  return requestJson<AgentTaskDetail>(`/agents/tasks/${taskId}`);
+}
+
+export async function executeAgent(
+  payload: ExecuteAgentPayload
+): Promise<ExecuteAgentResponse> {
+  return requestJson<ExecuteAgentResponse>("/agents/execute", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getAdminDashboard(): Promise<AdminDashboard> {
+  return requestJson<AdminDashboard>("/admin/dashboard");
+}
+
 interface StreamConversationInput {
   conversationId: string;
   content: string;
@@ -258,7 +411,12 @@ export async function streamConversation(input: StreamConversationInput): Promis
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`
+        Authorization: `Bearer ${accessToken}`,
+        ...(session?.currentWorkspace?.id
+          ? {
+              "X-Workspace-Id": session.currentWorkspace.id
+            }
+          : {})
       },
       body: JSON.stringify({
         content: input.content,
@@ -285,6 +443,7 @@ export async function streamConversation(input: StreamConversationInput): Promis
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let receivedDone = false;
 
   const reader = response.body.getReader();
 
@@ -314,6 +473,7 @@ export async function streamConversation(input: StreamConversationInput): Promis
       let payload: {
         delta?: string;
         done?: boolean;
+        error?: string;
       };
 
       try {
@@ -329,9 +489,18 @@ export async function streamConversation(input: StreamConversationInput): Promis
         input.onToken(payload.delta);
       }
 
+      if (eventName === "error") {
+        throw new Error(payload.error ?? "Streaming request failed.");
+      }
+
       if (eventName === "done" || payload.done) {
+        receivedDone = true;
         return;
       }
     }
+  }
+
+  if (!receivedDone) {
+    throw new Error("Streaming response ended before completion.");
   }
 }

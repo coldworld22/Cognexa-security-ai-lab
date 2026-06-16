@@ -11,6 +11,12 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-security_ai_lab}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
@@ -19,6 +25,26 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: security-ai-lab-ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
 
   backend:
     build:
@@ -26,8 +52,12 @@ services:
       dockerfile: docker/backend/Dockerfile
     container_name: security-ai-lab-backend
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -40,7 +70,8 @@ services:
       REFRESH_TOKEN_TTL: 7d
       DEFAULT_LLM_PROVIDER: qwen
       DEFAULT_LLM_MODEL: qwen2.5-coder
-      LOCAL_MODEL_BASE_URL: http://host.docker.internal:11434/v1
+      LOCAL_MODEL_BASE_URL: http://ollama:11434/v1
+      LOCAL_EMBEDDING_BASE_URL: http://ollama:11434/v1
       QDRANT_URL: http://host.docker.internal:6333
       EMBEDDING_DIMENSION: 8
       STORAGE_PATH: ../storage
@@ -50,6 +81,18 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./storage:/app/storage
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   frontend:
     build:
@@ -57,12 +100,26 @@ services:
       dockerfile: docker/frontend/Dockerfile
     container_name: security-ai-lab-frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       NEXT_PUBLIC_API_URL: http://backend:5000/api/v1
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
 volumes:
   postgres-data:
   redis-data:
+  ollama-data:

@@ -16,3 +16,35 @@ export function validateBody(schema: ZodTypeAny) {
     next();
   };
 }
+
+export function validateParams(schema: ZodTypeAny) {
+  return (request: Request, response: Response, next: NextFunction) => {
+    const result = schema.safeParse(request.params);
+    if (!result.success) {
+      response.status(400).json({
+        error: "Validation failed",
+        issues: result.error.issues
+      });
+      return;
+    }
+
+    Object.assign(request.params, result.data);
+    next();
+  };
+}
+
+export function validateQuery(schema: ZodTypeAny) {
+  return (request: Request, response: Response, next: NextFunction) => {
+    const result = schema.safeParse(request.query);
+    if (!result.success) {
+      response.status(400).json({
+        error: "Validation failed",
+        issues: result.error.issues
+      });
+      return;
+    }
+
+    Object.assign(request.query, result.data);
+    next();
+  };
+}
