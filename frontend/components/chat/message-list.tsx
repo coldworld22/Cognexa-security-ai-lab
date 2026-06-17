@@ -15,18 +15,18 @@ interface MessageListProps {
 const starterCards = [
   {
     eyebrow: "Security Review",
-    title: "Audit the authentication flow",
-    body: "Trace login, session refresh, and protected routes from frontend to backend."
+    title: "Audit authentication and session boundaries",
+    body: "Trace login, refresh flow, workspace headers, and protected routes from frontend to backend."
   },
   {
-    eyebrow: "RAG Trace",
-    title: "Inspect retrieval and ingestion",
+    eyebrow: "Documents",
+    title: "Inspect retrieval and ingestion paths",
     body: "Map document parsing, vector storage, and retrieval behavior across the stack."
   },
   {
-    eyebrow: "Workspace Summary",
-    title: "Summarize current context",
-    body: "Combine chat history, memory, tools, and providers into a concise operating brief."
+    eyebrow: "Agent Ops",
+    title: "Launch a workspace task",
+    body: "Use the workspace tabs to run tools, inspect memory, and review persisted task traces."
   }
 ];
 
@@ -52,22 +52,36 @@ export function MessageList({ messages }: MessageListProps) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex min-h-[48vh] items-center justify-center px-4">
-        <div className="w-full max-w-4xl">
-          <AppIdentity size="lg" />
-          <h2 className="mt-10 text-3xl font-semibold tracking-[-0.04em] text-[var(--text-primary)] sm:text-4xl md:text-5xl">
-            Start with a concrete security task.
+      <div className="flex min-h-full items-center justify-center px-2 py-6 sm:px-4">
+        <div className="w-full max-w-5xl rounded-[28px] border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.92)_0%,rgba(244,248,251,0.72)_100%)] p-6 shadow-[0_24px_70px_rgba(15,23,42,0.08)] sm:p-8">
+          <AppIdentity size="md" showTagline={false} />
+          <div className="mt-8 flex flex-wrap gap-2">
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+              Chat
+            </span>
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+              Memory
+            </span>
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+              Agents
+            </span>
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+              Security
+            </span>
+          </div>
+          <h2 className="mt-6 text-3xl font-semibold tracking-[-0.04em] text-[var(--text-primary)] sm:text-4xl">
+            Start with a concrete engineering task.
           </h2>
           <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-            Ask about your codebase, uploaded files, memory context, or run a tool-assisted task
-            from the workspace panel.
+            Ask about the codebase, uploaded files, memory context, or use the workspace tabs to
+            inspect agents, tasks, and security operations.
           </p>
 
           <div className="mt-8 grid gap-3 md:grid-cols-3">
             {starterCards.map((card) => (
               <div
                 key={card.title}
-                className="rounded-[26px] border border-white/70 bg-white/70 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.06)] backdrop-blur"
+                className="rounded-[24px] border border-white/80 bg-white/78 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.05)] backdrop-blur"
               >
                 <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-tertiary)]">
                   {card.eyebrow}
@@ -87,7 +101,7 @@ export function MessageList({ messages }: MessageListProps) {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8 pb-6">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 pb-8">
       {messages.map((message) => {
         const isAssistant = message.role === "assistant";
         const isUser = message.role === "user";
@@ -104,12 +118,12 @@ export function MessageList({ messages }: MessageListProps) {
             <div
               className={cn(
                 "max-w-full",
-                isUser && "max-w-[90%] sm:max-w-[80%]",
-                isAssistant && "w-full",
+                isUser && "max-w-[92%] sm:max-w-[76%]",
+                isAssistant && "w-full max-w-[72rem]",
                 isSystem && "w-full"
               )}
             >
-              <div className="mb-2 flex items-center gap-2 px-1 text-xs uppercase tracking-[0.18em] text-black/40">
+              <div className="mb-2 flex items-center gap-2 px-1 text-[11px] uppercase tracking-[0.18em] text-black/38">
                 <span>
                   {isAssistant ? "Assistant" : isUser ? "You" : message.role}
                 </span>
@@ -117,9 +131,11 @@ export function MessageList({ messages }: MessageListProps) {
               </div>
               <div
                 className={cn(
-                  "overflow-hidden rounded-[28px] px-4 py-4 sm:rounded-[30px] sm:px-5",
-                  isAssistant && "bg-transparent text-[#111827]",
-                  isUser && "bg-[linear-gradient(135deg,#dceeff_0%,#eaf3ff_100%)] text-[#111827] shadow-[0_16px_35px_rgba(59,130,246,0.08)]",
+                  "overflow-hidden rounded-[26px] px-4 py-4 sm:px-5",
+                  isAssistant &&
+                    "border border-black/6 bg-white/68 text-[#111827] shadow-[0_14px_35px_rgba(15,23,42,0.04)]",
+                  isUser &&
+                    "bg-[linear-gradient(135deg,#dceeff_0%,#eaf3ff_100%)] text-[#111827] shadow-[0_16px_35px_rgba(59,130,246,0.08)]",
                   isSystem && "border border-black/10 bg-[#f2f4f7] text-black/70"
                 )}
               >

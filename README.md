@@ -1,53 +1,117 @@
-# security-ai-lab
+# Cognexa Security AI Lab
 
-Self-hosted AI assistant platform with production-oriented scaffolding for chat, memory, retrieval, agents, and tool execution.
+Cognexa Security AI Lab is a self-hosted, local-first AI assistant platform for security operations and engineering workflows. It combines chat, retrieval-augmented generation (RAG), memory, agent orchestration, and tool execution behind a Next.js frontend and a TypeScript/Express backend.
 
-## Structure
+## Highlights
+
+- Local-first deployment with Ollama as the default model and embedding runtime
+- Chat workspace and admin surfaces built with Next.js 15 and React 19
+- JWT authentication with access and refresh token flows
+- Document ingestion for `.txt`, `.pdf`, and `.docx` sources
+- Retrieval backed by PostgreSQL `pgvector`, with optional Qdrant support
+- Redis-backed runtime services, startup health checks, and graceful shutdown handling
+- Provider abstractions for Qwen, Llama, Mistral, and Gemma-family models
+
+## Architecture
 
 ```text
-security-ai-lab/
-  frontend/     Next.js + Tailwind dashboard and chat shell
-  backend/      Express + TypeScript API, services, repositories, providers
-  llm/          Local model notes and provider assets
-  agents/       Agent profiles and orchestration notes
-  memory/       Memory strategy docs and future policies
-  rag/          Retrieval pipeline notes
-  tools/        Tool catalog and contracts
-  uploads/      User-uploaded source documents
-  storage/      Persistent local storage
-  docs/         Architecture, deployment, and operational docs
-  docker/       Dockerfiles and database bootstrap assets
+Next.js frontend
+    |
+    v
+Express API
+    |
+    +-- PostgreSQL + pgvector
+    +-- Redis
+    +-- Ollama / OpenAI-compatible model endpoints
+    +-- Optional Qdrant vector store
 ```
 
-## Getting started
+## Quick Start
 
-1. Copy `.env.example`, `backend/.env.example`, and `frontend/.env.example.local` into live env files.
-2. Install dependencies with `npm install` from the repository root.
-3. Start infrastructure with `docker compose up -d postgres redis`.
-4. Run `npm run dev:backend` and `npm run dev:frontend`.
+### 1. Clone and install dependencies
 
-## Startup behavior
+```bash
+git clone https://github.com/coldworld22/Cognexa-security-ai-lab.git
+cd Cognexa-security-ai-lab
+npm install
+```
 
-- Backend startup now creates runtime storage directories automatically.
-- PostgreSQL readiness is checked before the API starts serving traffic.
-- SQL migrations in `backend/src/database/migrations` are applied automatically on boot.
-- Redis readiness is checked before the backend finishes bootstrapping.
-- The backend handles `SIGINT` and `SIGTERM` with graceful shutdown of HTTP, Redis, and PostgreSQL connections.
+### 2. Create environment files
 
-## Current state
+```bash
+cp .env.example .env
+cp backend/.env.example backend/.env
+cp frontend/.env.example.local frontend/.env.local
+```
 
-This repository now contains a production-grade initial skeleton:
+If you are using PowerShell, replace `cp` with `Copy-Item`.
 
-- JWT auth flow with refresh token support.
-- Chat, memory, RAG, agent, admin, and tool API domains.
-- Local-model provider abstractions for Qwen, Llama, Mistral, and Gemma.
-- Vector store abstraction for `pgvector` and Qdrant.
-- Next.js admin and chat UI shell ready to connect to live APIs.
-- Docker compose baseline for self-hosted deployment.
+### 3. Start the core services
 
-## RAG requirements
+```bash
+docker compose up -d postgres redis ollama
+```
 
-- TXT, PDF, and DOCX uploads are now parsed with real extraction logic.
-- RAG ingestion and retrieval now use an OpenAI-compatible embeddings endpoint instead of placeholder vectors.
-- Set `LOCAL_EMBEDDING_BASE_URL` and `DEFAULT_EMBEDDING_MODEL` in `backend/.env`.
-- The default example assumes a local embedding model such as `nomic-embed-text`.
+### 4. Pull the default Ollama models
+
+```bash
+docker exec security-ai-lab-ollama ollama pull qwen2.5-coder
+docker exec security-ai-lab-ollama ollama pull nomic-embed-text
+```
+
+### 5. Run the application
+
+```bash
+npm run dev:backend
+npm run dev:frontend
+```
+
+Frontend: `http://localhost:3000`  
+Backend health: `http://localhost:5000/health`
+
+## Full Docker Stack
+
+To run the frontend and backend in containers as well:
+
+```bash
+docker compose up --build
+```
+
+The Compose stack includes `postgres`, `redis`, `ollama`, `backend`, and `frontend`.
+
+## Configuration
+
+Review these files before running outside the default local setup:
+
+- `.env.example`
+- `backend/.env.example`
+- `frontend/.env.example.local`
+
+The most important settings are:
+
+- `DEFAULT_LLM_MODEL` and `LOCAL_MODEL_BASE_URL`
+- `DEFAULT_EMBEDDING_MODEL` and `LOCAL_EMBEDDING_BASE_URL`
+- `EMBEDDING_DIMENSION` if you switch to a different embedding model
+- `POSTGRES_URL` and `REDIS_URL`
+- `QDRANT_URL` if you want to use Qdrant instead of `pgvector`
+- `ADMIN_LOGIN` and `ADMIN_PASSWORD` before exposing the stack outside local development
+
+## Key Directories
+
+```text
+frontend/   Next.js dashboard, chat workspace, and admin UI
+backend/    Express API, services, repositories, providers, and migrations
+docs/       Architecture and deployment notes
+docker/     Dockerfiles and bootstrap assets
+agents/     Agent profiles and orchestration notes
+memory/     Memory strategy and policy notes
+rag/        Retrieval pipeline notes
+tools/      Tool catalog and contracts
+storage/    Persistent local storage
+uploads/    Uploaded documents
+```
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Deployment](docs/deployment.md)

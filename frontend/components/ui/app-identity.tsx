@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 
 interface AppIdentityProps {
   className?: string;
+  showSubtitle?: boolean;
   showTagline?: boolean;
   tone?: "light" | "dark";
   size?: "sm" | "md" | "lg";
@@ -78,6 +79,7 @@ const toneClassNames: Record<
 
 export function AppIdentity({
   className,
+  showSubtitle = true,
   showTagline = true,
   tone = "light",
   size = "md"
@@ -106,15 +108,17 @@ export function AppIdentity({
         <p className={cn("font-semibold tracking-[-0.03em]", scale.title, toneStyles.title)}>
           {APP_NAME}
         </p>
-        <p
-          className={cn(
-            "mt-1 uppercase tracking-[0.3em]",
-            scale.subtitle,
-            toneStyles.subtitle
-          )}
-        >
-          AI Workspace
-        </p>
+        {showSubtitle ? (
+          <p
+            className={cn(
+              "mt-1 uppercase tracking-[0.3em]",
+              scale.subtitle,
+              toneStyles.subtitle
+            )}
+          >
+            AI Workspace
+          </p>
+        ) : null}
         {showTagline ? (
           <p className={cn("mt-3 max-w-md leading-6", scale.tagline, toneStyles.tagline)}>
             {APP_TAGLINE}

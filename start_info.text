@@ -1,0 +1,67 @@
+Security AI Lab - Local Start Info
+
+Run all commands from:
+f:\Projects\security-ai-lab
+
+FIRST TIME SETUP
+
+1. Install dependencies
+npm install
+
+2. Create env files if missing
+Copy-Item .env.example .env
+Copy-Item backend\.env.example backend\.env
+Copy-Item frontend\.env.example.local frontend\.env.local
+
+3. Start Docker Desktop
+
+4. Start required containers
+docker compose up -d postgres redis ollama
+
+5. Pull Ollama models once
+docker exec security-ai-lab-ollama ollama pull qwen2.5-coder
+docker exec security-ai-lab-ollama ollama pull nomic-embed-text
+
+NORMAL START
+
+1. Make sure Docker Desktop is running
+
+2. Start containers
+docker compose up -d postgres redis ollama
+
+3. Start backend in terminal 1
+npm run dev:backend
+
+4. Start frontend in terminal 2
+npm run dev:frontend
+
+OPEN IN BROWSER
+
+Frontend:
+http://localhost:3000
+
+Backend health:
+http://localhost:5000/health
+
+STOP
+
+Stop app terminals with Ctrl+C
+
+Stop containers:
+docker compose down
+
+USEFUL CHECKS
+
+Check containers:
+docker compose ps
+
+Check backend health:
+Invoke-WebRequest http://localhost:5000/health
+
+COMMON FIX FOR "localhost refused to connect"
+
+1. Make sure Docker Desktop is open
+2. Run docker compose up -d postgres redis ollama
+3. Make sure backend terminal is running
+4. Make sure frontend terminal is running
+5. Confirm ports 3000 and 5000 are listening

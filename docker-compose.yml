@@ -73,7 +73,7 @@ services:
       LOCAL_MODEL_BASE_URL: http://ollama:11434/v1
       LOCAL_EMBEDDING_BASE_URL: http://ollama:11434/v1
       QDRANT_URL: http://host.docker.internal:6333
-      EMBEDDING_DIMENSION: 8
+      EMBEDDING_DIMENSION: 768
       STORAGE_PATH: ../storage
       UPLOADS_PATH: ../uploads
     ports:

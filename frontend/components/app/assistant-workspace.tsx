@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
-import { PanelLeft, PanelRight, X } from "lucide-react";
+import { Menu, Settings2, X } from "lucide-react";
 
 import {
   acceptWorkspaceInvitation,
@@ -38,8 +38,12 @@ import {
   WorkspaceInvitation,
   WorkspaceSummary
 } from "@/lib/types";
-import { ChatShell } from "@/components/chat/chat-shell";
+import {
+  ChatShell,
+  WorkspaceView
+} from "@/components/chat/chat-shell";
 import { Sidebar } from "@/components/layout/sidebar";
+import { WorkspaceSettingsPanel } from "@/components/layout/workspace-settings-panel";
 import { AppIdentity } from "@/components/ui/app-identity";
 import { Card } from "@/components/ui/card";
 import { APP_NAME } from "@/lib/branding";
@@ -133,6 +137,10 @@ export function AssistantWorkspace({
   const [isLoadingTaskDetail, setIsLoadingTaskDetail] = useState(false);
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false);
   const [isNavigationOpen, setIsNavigationOpen] = useState(false);
+  const [activeView, setActiveView] = useState<WorkspaceView>("chat");
+  const [workspacePanelSection, setWorkspacePanelSection] = useState<
+    "workspace" | "profile"
+  >("workspace");
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -443,6 +451,7 @@ export function AssistantWorkspace({
 
   async function handleSelectConversation(conversationId: string) {
     setIsNavigationOpen(false);
+    setActiveView("chat");
 
     if (conversationId === routeConversationId) {
       return;
@@ -456,6 +465,7 @@ export function AssistantWorkspace({
   async function handleSelectTask(taskId: string) {
     setAgentError(null);
     setIsLoadingTaskDetail(true);
+    setActiveView("tasks");
     startTransition(() => {
       setSelectedTaskId(taskId);
     });
@@ -463,7 +473,6 @@ export function AssistantWorkspace({
     try {
       const taskDetail = await getAgentTask(taskId);
       setSelectedTaskDetail(taskDetail);
-      setIsWorkspaceOpen(true);
     } catch (taskError) {
       setAgentError(
         taskError instanceof Error ? taskError.message : "Failed to load task detail."
@@ -487,7 +496,6 @@ export function AssistantWorkspace({
 
     try {
       await refreshTasksState();
-      setIsWorkspaceOpen(true);
     } catch (taskError) {
       setAgentError(
         taskError instanceof Error ? taskError.message : "Failed to refresh agent tasks."
@@ -513,6 +521,8 @@ export function AssistantWorkspace({
   function handleStartNewChat() {
     setError(null);
     setIsNavigationOpen(false);
+    setIsWorkspaceOpen(false);
+    setActiveView("chat");
     setSelectedConversationId(null);
     setMessages([]);
     startTransition(() => {
@@ -571,7 +581,7 @@ export function AssistantWorkspace({
 
     setAgentError(null);
     setIsRunningAgent(true);
-    setIsWorkspaceOpen(true);
+    setActiveView("agents");
 
     try {
       const result = await executeAgent({
@@ -615,6 +625,8 @@ export function AssistantWorkspace({
     try {
       const workspaceSession = await switchWorkspaceSession(workspaceId);
       applyWorkspaceSession(workspaceSession);
+      setIsWorkspaceOpen(false);
+      setActiveView("chat");
       startTransition(() => {
         router.push("/");
       });
@@ -651,6 +663,8 @@ export function AssistantWorkspace({
         organizationName: organizationName?.trim() || undefined
       });
       applyWorkspaceSession(workspaceSession);
+      setIsWorkspaceOpen(false);
+      setActiveView("chat");
       startTransition(() => {
         router.push("/");
       });
@@ -712,6 +726,8 @@ export function AssistantWorkspace({
     try {
       const workspaceSession = await acceptWorkspaceInvitation(invitationId);
       applyWorkspaceSession(workspaceSession);
+      setIsWorkspaceOpen(false);
+      setActiveView("chat");
       startTransition(() => {
         router.push("/");
       });
@@ -738,6 +754,7 @@ export function AssistantWorkspace({
 
     setError(null);
     setIsStreaming(true);
+    setActiveView("chat");
 
     let conversationId = selectedConversationId;
     let createdConversationId: string | null = null;
@@ -812,6 +829,7 @@ export function AssistantWorkspace({
     setSession(null);
     setIsNavigationOpen(false);
     setIsWorkspaceOpen(false);
+    setActiveView("chat");
     setConversations([]);
     setMessages([]);
     setMemoryItems([]);
@@ -829,6 +847,12 @@ export function AssistantWorkspace({
     startTransition(() => {
       router.push("/login");
     });
+  }
+
+  function openWorkspacePanel(section: "workspace" | "profile" = "workspace") {
+    setWorkspacePanelSection(section);
+    setIsNavigationOpen(false);
+    setIsWorkspaceOpen(true);
   }
 
   if (!isHydrated || isLoading) {
@@ -917,18 +941,14 @@ export function AssistantWorkspace({
     userName: session.user.displayName,
     userEmail: session.user.email,
     currentWorkspace,
-    workspaces,
-    pendingInvitations,
+    pendingInvitationsCount: pendingInvitations.length,
     conversations,
     selectedConversationId,
     onSelectConversation: handleSelectConversation,
     onCreateConversation: handleStartNewChat,
-    onCreateWorkspace: handleCreateWorkspace,
-    onSwitchWorkspace: handleSwitchWorkspace,
-    onInviteMember: handleInviteMember,
-    onAcceptInvitation: handleAcceptInvitation,
+    onOpenWorkspaceSettings: () => openWorkspacePanel("workspace"),
+    onOpenProfileSettings: () => openWorkspacePanel("profile"),
     onDeleteConversation: handleDeleteConversation,
-    onLogout: handleLogout,
     deletingConversationId
   };
 
@@ -939,18 +959,20 @@ export function AssistantWorkspace({
         <div className="absolute bottom-[-8rem] right-[-6rem] h-96 w-96 rounded-full bg-[#0d4673]/10 blur-3xl" />
       </div>
       <div className="relative flex h-full min-h-0 flex-col gap-4">
-        <div className="flex flex-col gap-3 rounded-[30px] border border-white/70 bg-[rgba(255,255,255,0.82)] px-4 py-3 shadow-[0_24px_70px_rgba(15,23,42,0.08)] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between lg:hidden">
-          <AppIdentity size="sm" showTagline={false} />
+        <div className="flex flex-col gap-3 rounded-[28px] border border-white/70 bg-[rgba(255,255,255,0.84)] px-4 py-3 shadow-[0_24px_70px_rgba(15,23,42,0.08)] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between xl:hidden">
+          <div className="min-w-0">
+            <AppIdentity size="sm" showSubtitle={false} showTagline={false} />
+            <p className="mt-2 truncate text-sm text-[var(--text-secondary)]">
+              {currentWorkspace?.name ?? "Workspace"}
+            </p>
+          </div>
           <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
             <button
               type="button"
-              onClick={() => {
-                setIsNavigationOpen(false);
-                setIsWorkspaceOpen((current) => !current);
-              }}
+              onClick={() => openWorkspacePanel("workspace")}
               className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-medium text-[var(--text-primary)] transition hover:bg-white"
             >
-              <PanelRight className="size-4" />
+              <Settings2 className="size-4" />
               Workspace
             </button>
             <button
@@ -961,18 +983,24 @@ export function AssistantWorkspace({
               }}
               className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-medium text-[var(--text-primary)] transition hover:bg-white"
             >
-              <PanelLeft className="size-4" />
-              Chats
+              <Menu className="size-4" />
+              Menu
             </button>
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
-          <div className="hidden min-h-0 lg:block">
+        <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[290px_minmax(0,1fr)]">
+          <div className="hidden min-h-0 xl:block">
             <Sidebar {...sidebarProps} className="h-full" />
           </div>
           <ChatShell
+            currentWorkspace={currentWorkspace}
+            userName={session.user.displayName}
+            userEmail={session.user.email}
             conversationTitle={selectedConversation?.title ?? "New Chat"}
+            conversationCount={conversations.length}
+            pendingInvitationCount={pendingInvitations.length}
+            activeView={activeView}
             messages={messages}
             pending={isStreaming || isLoadingMessages}
             error={error}
@@ -992,8 +1020,8 @@ export function AssistantWorkspace({
             selectedTaskDetail={selectedTaskDetail}
             isAgentRunning={isRunningAgent}
             isLoadingTaskDetail={isLoadingTaskDetail}
-            isWorkspaceOpen={isWorkspaceOpen}
-            onToggleWorkspace={() => setIsWorkspaceOpen((current) => !current)}
+            onViewChange={setActiveView}
+            onOpenWorkspacePanel={openWorkspacePanel}
             onAgentObjectiveChange={setAgentObjective}
             onToggleTool={handleToggleTool}
             onRunAgent={handleRunAgent}
@@ -1004,7 +1032,7 @@ export function AssistantWorkspace({
       </div>
 
       {isNavigationOpen ? (
-        <div className="fixed inset-0 z-50 bg-[#08111d]/42 backdrop-blur-sm lg:hidden">
+        <div className="fixed inset-0 z-50 bg-[#08111d]/42 backdrop-blur-sm xl:hidden">
           <div
             className="absolute inset-0"
             onClick={() => setIsNavigationOpen(false)}
@@ -1022,6 +1050,22 @@ export function AssistantWorkspace({
           </div>
         </div>
       ) : null}
+
+      <WorkspaceSettingsPanel
+        isOpen={isWorkspaceOpen}
+        section={workspacePanelSection}
+        currentWorkspace={currentWorkspace}
+        workspaces={workspaces}
+        pendingInvitations={pendingInvitations}
+        userName={session.user.displayName}
+        userEmail={session.user.email}
+        onClose={() => setIsWorkspaceOpen(false)}
+        onCreateWorkspace={handleCreateWorkspace}
+        onSwitchWorkspace={handleSwitchWorkspace}
+        onInviteMember={handleInviteMember}
+        onAcceptInvitation={handleAcceptInvitation}
+        onLogout={handleLogout}
+      />
     </main>
   );
 }
