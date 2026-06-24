@@ -52,7 +52,8 @@ export class ProviderFactory {
           models: z
             .array(
               z.object({
-                name: z.string(),
+                name: z.string().optional(),
+                model: z.string().optional(),
                 capabilities: z.array(z.string()).optional()
               })
             )
@@ -60,9 +61,12 @@ export class ProviderFactory {
         })
         .parse(await response.json());
 
-      return payload.models
-        .filter((model) => model.capabilities?.includes("completion"))
-        .map((model) => model.name);
+      const installedModels = payload.models
+        .filter((model) => this.isCompletionModel(model.capabilities))
+        .map((model) => this.normalizeModelName(model.model ?? model.name ?? ""))
+        .filter((model) => model.length > 0);
+
+      return Array.from(new Set(installedModels));
     } catch {
       return [];
     }
@@ -73,7 +77,7 @@ export class ProviderFactory {
   }
 
   private matchesProvider(providerId: string, model: string): boolean {
-    const normalizedModel = model.toLowerCase();
+    const normalizedModel = this.normalizeModelName(model).toLowerCase();
 
     switch (providerId) {
       case "qwen":
@@ -96,5 +100,19 @@ export class ProviderFactory {
       default:
         return false;
     }
+  }
+
+  private normalizeModelName(model: string): string {
+    return model.trim().replace(/:latest$/i, "");
+  }
+
+  private isCompletionModel(capabilities?: string[]): boolean {
+    if (!capabilities || capabilities.length === 0) {
+      return true;
+    }
+
+    return capabilities.some((capability) =>
+      ["completion", "tools", "insert", "vision"].includes(capability)
+    );
   }
 }

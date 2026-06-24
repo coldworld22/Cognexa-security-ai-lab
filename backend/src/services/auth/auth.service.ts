@@ -54,7 +54,7 @@ export class AuthService {
   }
 
   async login(input: LoginInput) {
-    const user = await this.users.findByEmail(input.username);
+    const user = await this.users.findByLoginIdentifier(input.username);
     if (!user) {
       throw new AppError("Invalid username or password", 401);
     }
@@ -85,18 +85,47 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string) {
-    const decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET) as jwt.JwtPayload;
-    const session = await this.redis.get(`refresh:${decoded.jti as string}`);
+    const decoded = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET, {
+      algorithms: ["HS256"]
+    }) as jwt.JwtPayload;
+    const tokenId = decoded.jti as string | undefined;
+    if (!tokenId) {
+      throw new AppError("Refresh token is invalid", 401);
+    }
+
+    const session = await this.redis.get(`refresh:${tokenId}`);
 
     if (!session) {
       throw new AppError("Refresh token is no longer valid", 401);
     }
 
+    if (session !== (decoded.sub as string)) {
+      await this.redis.del(`refresh:${tokenId}`);
+      throw new AppError("Refresh token is invalid", 401);
+    }
+
+    await this.redis.del(`refresh:${tokenId}`);
     return this.issueTokens(decoded.sub as string, decoded.email as string);
   }
 
+  async updatePreferences(userId: string, preferences: Record<string, unknown>) {
+    const currentUser = await this.users.findById(userId);
+    if (!currentUser) {
+      throw new AppError("User not found", 404);
+    }
+
+    const nextUser = await this.users.updatePreferences(userId, {
+      ...currentUser.preferences,
+      ...preferences
+    });
+
+    return this.toAuthenticatedUser(nextUser);
+  }
+
   verifyAccessToken(token: string) {
-    return jwt.verify(token, env.JWT_SECRET) as jwt.JwtPayload;
+    return jwt.verify(token, env.JWT_SECRET, {
+      algorithms: ["HS256"]
+    }) as jwt.JwtPayload;
   }
 
   private toAuthenticatedUser(user: UserEntity): AuthenticatedUser {
@@ -115,15 +144,21 @@ export class AuthService {
     const jti = randomUUID();
     const accessToken = jwt.sign({ email }, env.JWT_SECRET, {
       subject: userId,
+      algorithm: "HS256",
       expiresIn: env.ACCESS_TOKEN_TTL as jwt.SignOptions["expiresIn"]
     });
     const refreshToken = jwt.sign({ email, jti }, env.JWT_REFRESH_SECRET, {
       subject: userId,
+      algorithm: "HS256",
       expiresIn: env.REFRESH_TOKEN_TTL as jwt.SignOptions["expiresIn"]
     });
+    const decodedRefreshToken = jwt.decode(refreshToken) as jwt.JwtPayload | null;
+    const refreshTokenTtlSeconds = decodedRefreshToken?.exp
+      ? Math.max(decodedRefreshToken.exp - Math.floor(Date.now() / 1000), 1)
+      : 60 * 60 * 24 * 7;
 
     await this.redis.set(`refresh:${jti}`, userId, {
-      EX: 60 * 60 * 24 * 7
+      EX: refreshTokenTtlSeconds
     });
 
     return {

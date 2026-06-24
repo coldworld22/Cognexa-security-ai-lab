@@ -3,6 +3,21 @@ import { z } from "zod";
 
 config();
 
+const fortiGateBaseUrl =
+  process.env.FORTIGATE_BASE_URL ?? process.env.FORTIGATE_HOST;
+const fortiGateApiToken =
+  process.env.FORTIGATE_API_TOKEN ?? process.env.FORTIGATE_TOKEN;
+const fortiGateVerifyTls =
+  process.env.FORTIGATE_VERIFY_TLS ??
+  (process.env.FORTIGATE_ALLOW_SELF_SIGNED ? undefined : "true");
+const fortiGateAllowSelfSigned =
+  process.env.FORTIGATE_ALLOW_SELF_SIGNED ??
+  (fortiGateVerifyTls
+    ? fortiGateVerifyTls === "false"
+      ? "true"
+      : "false"
+    : undefined);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(5000),
@@ -11,6 +26,14 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1),
   JWT_SECRET: z.string().min(12),
   JWT_REFRESH_SECRET: z.string().min(12),
+  ENDPOINT_ENROLLMENT_TOKEN: z.string().min(16).optional(),
+  FORTIGATE_BASE_URL: z.string().url().optional(),
+  FORTIGATE_API_TOKEN: z.string().min(16).optional(),
+  FORTIGATE_VDOM: z.string().min(1).optional(),
+  FORTIGATE_ALLOW_SELF_SIGNED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
   ADMIN_LOGIN: z.string().min(1).default("admin"),
   ADMIN_PASSWORD: z.string().min(8),
   ADMIN_DISPLAY_NAME: z.string().min(1).default("Administrator"),
@@ -21,11 +44,16 @@ const envSchema = z.object({
     .enum(["qwen", "llama", "mistral", "gemma"])
     .default("qwen"),
   DEFAULT_LLM_MODEL: z.string().default("qwen2.5-coder"),
+  AUTHORIZED_TESTING_DEV_MODE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   LOCAL_MODEL_BASE_URL: z.string().url().default("http://localhost:11434/v1"),
   LOCAL_EMBEDDING_BASE_URL: z
     .string()
     .url()
     .default("http://localhost:11434/v1"),
+  WEBSITE_SCANNER_BROWSER_PATH: z.string().min(1).optional(),
   DEFAULT_EMBEDDING_MODEL: z.string().default("nomic-embed-text"),
   QDRANT_URL: z.string().url().default("http://localhost:6333"),
   EMBEDDING_DIMENSION: z.coerce.number().int().positive().default(768),
@@ -38,4 +66,9 @@ const envSchema = z.object({
   STARTUP_RETRY_DELAY_MS: z.coerce.number().int().positive().default(3000)
 });
 
-export const env = envSchema.parse(process.env);
+export const env = envSchema.parse({
+  ...process.env,
+  FORTIGATE_BASE_URL: fortiGateBaseUrl,
+  FORTIGATE_API_TOKEN: fortiGateApiToken,
+  FORTIGATE_ALLOW_SELF_SIGNED: fortiGateAllowSelfSigned ?? process.env.FORTIGATE_ALLOW_SELF_SIGNED
+});

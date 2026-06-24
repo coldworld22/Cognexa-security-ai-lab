@@ -4,6 +4,8 @@ import { ToolExecutionEntity } from "../../database/entities/tool-execution.enti
 import { AppError } from "../../utils/app-error";
 import { ToolRegistry } from "../../tools/registry/tool-registry";
 import { AuthorizationService } from "../authorization/authorization.service";
+import { PolicyService } from "../policy/policy.service";
+import { PolicyCategory } from "../../policy/policy.types";
 
 interface ToolExecutionRequestContext {
   actor: AccessContext;
@@ -18,7 +20,8 @@ export class ToolExecutionService {
   constructor(
     private readonly registry: ToolRegistry,
     private readonly toolExecutions: ToolExecutionRepository,
-    private readonly authorization: AuthorizationService
+    private readonly authorization: AuthorizationService,
+    private readonly policy: PolicyService
   ) {}
 
   async listTools(actor: AccessContext) {
@@ -29,7 +32,32 @@ export class ToolExecutionService {
       reason: "Tool catalog requires 'tools' permission"
     });
 
-    return this.registry.list();
+    const tools = this.registry.list();
+
+    return Promise.all(
+      tools.map(async (tool) => {
+        const decision = await this.policy.evaluatePolicy({
+          actor,
+          action: "tools.list.preview",
+          categories: this.getPolicyCategoriesForTool(tool.name),
+          toolName: tool.name,
+          metadata: {
+            preview: true
+          },
+          dryRun: true
+        }, {
+          enforce: false
+        });
+
+        return {
+          ...tool,
+          policyDecision: decision.decision,
+          policyWarnings: decision.warnings,
+          requiresApproval: decision.requiresApproval,
+          blocked: decision.blocking
+        };
+      })
+    );
   }
 
   async listByTaskId(taskId: string, actor: AccessContext) {
@@ -76,6 +104,21 @@ export class ToolExecutionService {
       throw new AppError(`Unknown tool: ${toolName}`, 404);
     }
 
+    await this.policy.evaluatePolicy({
+      actor: context.actor,
+      action: context.action ?? "execute_tool",
+      categories: this.getPolicyCategoriesForTool(toolName),
+      toolName,
+      content: JSON.stringify(input),
+      url: typeof input.url === "string" ? input.url : undefined,
+      sql: typeof input.sql === "string" ? input.sql : undefined,
+      metadata: {
+        resource: context.resource,
+        taskId: context.taskId,
+        ...(context.metadata ?? {})
+      }
+    });
+
     const execution = await this.toolExecutions.create({
       workspaceId: context.actor.workspaceId,
       taskId: context.taskId,
@@ -108,6 +151,21 @@ export class ToolExecutionService {
         errorMessage: message
       });
       throw error;
+    }
+  }
+
+  private getPolicyCategoriesForTool(toolName: string): PolicyCategory[] {
+    switch (toolName) {
+      case "file-search":
+      case "repository-search":
+      case "documentation-search":
+        return ["tool_usage", "document_access"];
+      case "database-query":
+        return ["tool_usage", "database_queries"];
+      case "web-search":
+        return ["tool_usage", "external_url_access"];
+      default:
+        return ["tool_usage"];
     }
   }
 }

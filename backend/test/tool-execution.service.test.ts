@@ -59,3 +59,52 @@ test("ToolExecutionService blocks execution when authorization fails", async () 
 
   assert.equal(executed, false);
 });
+
+test("ToolExecutionService lists blocked tools without failing the catalog preview", async () => {
+  const service = new ToolExecutionService(
+    {
+      list: () => [
+        {
+          name: "database-query",
+          description: "Run database queries",
+          category: "database",
+          inputSchema: {}
+        }
+      ]
+    } as never,
+    {} as never,
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "deny",
+        blocking: true,
+        requiresApproval: false,
+        warnings: [],
+        matchedRules: [],
+        mode: "enterprise",
+        evaluatedAt: new Date().toISOString()
+      })
+    } as never
+  );
+
+  const tools = await service.listTools({
+    userId: "user-1",
+    email: "admin@example.com",
+    displayName: "Admin",
+    role: "admin",
+    workspaceId: "workspace-1",
+    workspaceName: "Workspace One",
+    workspaceSlug: "workspace-one",
+    workspaceRole: "owner",
+    organizationId: "org-1",
+    organizationName: "Org One",
+    isPersonalWorkspace: false,
+    permissions: ["chat", "tools"]
+  });
+
+  assert.equal(tools[0]?.name, "database-query");
+  assert.equal(tools[0]?.policyDecision, "deny");
+  assert.equal(tools[0]?.blocked, true);
+});

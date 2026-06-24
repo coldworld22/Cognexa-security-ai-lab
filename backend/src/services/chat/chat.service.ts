@@ -13,6 +13,7 @@ import { ToolExecutionService } from "../tool-execution/tool-execution.service";
 import { RetrievalContextService } from "../rag/retrieval-context.service";
 import { RetrievalContextMetadata } from "../../rag/retrieval/retrieval-context.types";
 import { canManageWorkspace } from "../../workspaces/workspace.types";
+import { inferPolicyCategoriesFromText } from "../../policy/policy.types";
 
 interface CreateConversationInput {
   title: string;
@@ -30,6 +31,11 @@ interface PostMessageInput {
 interface BuiltChatPrompt {
   messages: LLMMessage[];
   retrieval?: RetrievalContextMetadata;
+}
+
+interface DirectSearchReply {
+  content: string;
+  metadata: Record<string, unknown>;
 }
 
 export type ChatStreamEvent =
@@ -114,6 +120,30 @@ export class ChatService {
     });
     await this.conversations.touch(input.conversationId);
 
+    const directSearchReply = await this.buildDirectSearchReply(
+      input.actor,
+      input.content
+    );
+    if (directSearchReply) {
+      const assistantMessage = await this.messages.create({
+        workspaceId: input.actor.workspaceId,
+        conversationId: input.conversationId,
+        role: "assistant",
+        content: directSearchReply.content,
+        metadata: directSearchReply.metadata
+      });
+      await this.conversations.touch(input.conversationId);
+
+      return {
+        reply: assistantMessage,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0
+        },
+        sources: []
+      };
+    }
+
     const prompt = await this.buildLlmMessages(
       input.actor,
       input.conversationId,
@@ -124,18 +154,36 @@ export class ChatService {
     const reply = await this.llm.createReply({
       provider: input.provider,
       model: input.model,
-      messages: prompt.messages
+      messages: prompt.messages,
+      policy: {
+        actor: input.actor,
+        action: "chat.post_message",
+        categories: inferPolicyCategoriesFromText(input.content),
+        content: input.content,
+        metadata: {
+          conversationId: input.conversationId
+        }
+      }
     });
+
+    const fallbackSearchReply = await this.buildFallbackSearchReply(
+      input.actor,
+      input.content,
+      reply.content
+    );
+    const finalContent = fallbackSearchReply?.content ?? reply.content;
+    const finalMetadata = {
+      usage: reply.usage,
+      retrieval: prompt.retrieval,
+      ...(fallbackSearchReply?.metadata ?? {})
+    };
 
     const assistantMessage = await this.messages.create({
       workspaceId: input.actor.workspaceId,
       conversationId: input.conversationId,
       role: "assistant",
-      content: reply.content,
-      metadata: {
-        usage: reply.usage,
-        retrieval: prompt.retrieval
-      }
+      content: finalContent,
+      metadata: finalMetadata
     });
     await this.conversations.touch(input.conversationId);
 
@@ -161,6 +209,94 @@ export class ChatService {
     });
     await this.conversations.touch(input.conversationId);
 
+    const directSearchReply = await this.buildDirectSearchReply(
+      input.actor,
+      input.content
+    );
+    if (directSearchReply) {
+      yield {
+        type: "token" as const,
+        chunk: {
+          delta: directSearchReply.content,
+          done: true
+        }
+      };
+
+      await this.messages.create({
+        workspaceId: input.actor.workspaceId,
+        conversationId: input.conversationId,
+        role: "assistant",
+        content: directSearchReply.content,
+        metadata: directSearchReply.metadata
+      });
+      await this.conversations.touch(input.conversationId);
+      return;
+    }
+
+    if (this.shouldAttemptSearchFallback(input.content)) {
+      const prompt = await this.buildLlmMessages(
+        input.actor,
+        input.conversationId,
+        true,
+        input.content
+      );
+
+      if ((prompt.retrieval?.sources.length ?? 0) > 0) {
+        yield {
+          type: "sources" as const,
+          sources: prompt.retrieval!.sources
+        };
+      }
+
+      const reply = await this.llm.createReply({
+        provider: input.provider,
+        model: input.model,
+        messages: prompt.messages,
+        policy: {
+          actor: input.actor,
+          action: "chat.stream_message",
+          categories: inferPolicyCategoriesFromText(input.content),
+          content: input.content,
+          metadata: {
+            conversationId: input.conversationId
+          }
+        }
+      });
+
+      const fallbackSearchReply = await this.buildFallbackSearchReply(
+        input.actor,
+        input.content,
+        reply.content
+      );
+      const finalContent = fallbackSearchReply?.content ?? reply.content;
+
+      yield {
+        type: "token" as const,
+        chunk: {
+          delta: finalContent,
+          done: true,
+          usage: {
+            inputTokens: reply.usage.inputTokens,
+            outputTokens: reply.usage.outputTokens
+          }
+        }
+      };
+
+      await this.messages.create({
+        workspaceId: input.actor.workspaceId,
+        conversationId: input.conversationId,
+        role: "assistant",
+        content: finalContent,
+        metadata: {
+          usage: reply.usage,
+          retrieval: prompt.retrieval,
+          ...(fallbackSearchReply?.metadata ?? {})
+        }
+      });
+      await this.conversations.touch(input.conversationId);
+      return;
+    }
+
     const prompt = await this.buildLlmMessages(
       input.actor,
       input.conversationId,
@@ -179,7 +315,16 @@ export class ChatService {
     for await (const chunk of this.llm.streamReply({
       provider: input.provider,
       model: input.model,
-      messages: prompt.messages
+      messages: prompt.messages,
+      policy: {
+        actor: input.actor,
+        action: "chat.stream_message",
+        categories: inferPolicyCategoriesFromText(input.content),
+        content: input.content,
+        metadata: {
+          conversationId: input.conversationId
+        }
+      }
     })) {
       responseText += chunk.delta;
       yield {
@@ -220,7 +365,7 @@ export class ChatService {
       {
         role: "system",
         content:
-          "You are Security AI Lab, a self-hosted assistant focused on security operations, engineering, and retrieval-aware reasoning. Respond in the same language as the latest user message unless they explicitly ask for another language."
+          "You are Security AI Lab, a self-hosted workspace assistant. Answer the user's request directly and naturally, and do not impose extra restrictions beyond the workspace configuration, user permissions, tool constraints, and model/provider limitations. Respond in the same language as the latest user message unless they explicitly ask for another language."
       },
       {
         role: "system",
@@ -369,5 +514,178 @@ export class ChatService {
   ): Promise<boolean> {
     const permissions = await this.authorization.getPermissionsForActor(actor);
     return permissions.includes(permission);
+  }
+
+  private async buildDirectSearchReply(
+    actor: AccessContext,
+    input: string
+  ): Promise<DirectSearchReply | null> {
+    if (!this.shouldUseDirectSearch(input) || !(await this.hasPermission(actor, "tools"))) {
+      return null;
+    }
+
+    return this.executeSearchReply(actor, input, "direct_search_query");
+  }
+
+  private async buildFallbackSearchReply(
+    actor: AccessContext,
+    input: string,
+    modelReply: string
+  ): Promise<DirectSearchReply | null> {
+    if (!this.isProviderRefusal(modelReply)) {
+      return null;
+    }
+
+    if (!this.shouldAttemptSearchFallback(input) || !(await this.hasPermission(actor, "tools"))) {
+      return null;
+    }
+
+    return this.executeSearchReply(actor, input, "search_fallback_after_refusal");
+  }
+
+  private async executeSearchReply(
+    actor: AccessContext,
+    query: string,
+    action: string
+  ): Promise<DirectSearchReply | null> {
+    try {
+      const response = await this.tools.execute(
+        "web-search",
+        {
+          query,
+          maxResults: 5
+        },
+        {
+          actor,
+          resource: `chat.search.${action}`,
+          action,
+          reason: "Search fallback requires 'tools' permission",
+          metadata: {
+            conversationInput: true,
+            fallback: true
+          }
+        }
+      );
+
+      const results = (response as {
+        provider?: string;
+        results?: Array<{
+          title?: string;
+          url?: string;
+          description?: string;
+          excerpt?: string;
+        }>;
+      }).results ?? [];
+
+      if (results.length === 0) {
+        return null;
+      }
+
+      return {
+        content: this.formatSearchResults(query, results),
+        metadata: {
+          searchProvider: (response as { provider?: string }).provider ?? "unknown",
+          searchQuery: query
+        }
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private formatSearchResults(
+    query: string,
+    results: Array<{
+      title?: string;
+      url?: string;
+      description?: string;
+      excerpt?: string;
+    }>
+  ): string {
+    const lines = [`Search results for "${query}":`, ""];
+
+    for (const [index, result] of results.slice(0, 5).entries()) {
+      lines.push(`${index + 1}. ${result.title ?? "Untitled result"}`);
+      if (result.url) {
+        lines.push(`URL: ${result.url}`);
+      }
+
+      const snippet = result.description ?? result.excerpt ?? "";
+      if (snippet) {
+        lines.push(`Snippet: ${snippet}`);
+      }
+
+      lines.push("");
+    }
+
+    return lines.join("\n").trim();
+  }
+
+  private shouldUseDirectSearch(input: string): boolean {
+    const normalized = input.trim();
+    if (!normalized || normalized.length > 160 || normalized.includes("\n")) {
+      return false;
+    }
+
+    if (this.extractUrls(normalized).length > 0) {
+      return false;
+    }
+
+    const lowered = normalized.toLowerCase();
+    if (/\b(search|find|lookup|look up|google|bing|duckduckgo|show me|give me|list)\b/.test(lowered)) {
+      return true;
+    }
+
+    const words = lowered.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 6) {
+      return false;
+    }
+
+    if (/[?!.,;:]/.test(lowered)) {
+      return false;
+    }
+
+    if (/^(what|why|how|when|where|who)\b/.test(lowered)) {
+      return false;
+    }
+
+    if (/\b(write|generate|create|implement|refactor|debug|fix|review|summarize|explain|analy[sz]e|compare|translate|draft|code|script|function|class|query|sql|regex|algorithm)\b/.test(lowered)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private shouldAttemptSearchFallback(input: string): boolean {
+    const normalized = input.trim();
+    if (!normalized || normalized.length > 220 || normalized.includes("\n")) {
+      return false;
+    }
+
+    if (this.extractUrls(normalized).length > 0) {
+      return false;
+    }
+
+    return (
+      this.shouldUseDirectSearch(normalized) ||
+      /\b(search|find|lookup|look up|google|bing|duckduckgo|show me|give me|list|where can i|where to)\b/i.test(normalized) ||
+      /^(what|which|where|who)\b/i.test(normalized)
+    );
+  }
+
+  private isProviderRefusal(reply: string): boolean {
+    const normalized = reply.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    return [
+      "i'm sorry, but i can't assist with that request",
+      "i'm sorry, but i can't assist with that",
+      "i can't assist with that request",
+      "i can't assist with that",
+      "i'm here to answer questions and provide information, but i can't produce or engage with adult content",
+      "i can't produce or engage with adult content"
+    ].some((pattern) => normalized.includes(pattern));
   }
 }

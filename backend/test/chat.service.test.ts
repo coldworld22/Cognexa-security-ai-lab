@@ -311,3 +311,172 @@ test("ChatService skips optional memory, rag, and tool augmentation when permiss
   assert.equal(retrievalCalls, 0);
   assert.equal(toolCalls, 0);
 });
+
+test("ChatService answers short keyword queries from web search without invoking the model", async () => {
+  const history: Array<Record<string, unknown>> = [];
+  let llmCalls = 0;
+  let toolCalls = 0;
+
+  const chat = new ChatService(
+    {
+      listByWorkspace: async () => [],
+      deleteById: async () => true,
+      create: async () => createConversation(),
+      findById: async () => createConversation(),
+      touch: async () => undefined
+    } as never,
+    {
+      create: async (input) => {
+        const message = {
+          id: `message-${history.length + 1}`,
+          conversationId: input.conversationId,
+          role: input.role,
+          content: input.content,
+          metadata: input.metadata ?? {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        history.push(message);
+        return message;
+      },
+      listByConversation: async () => history as never
+    } as never,
+    {
+      createReply: async () => {
+        llmCalls += 1;
+        return {
+          content: "This should not be used",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1
+          }
+        };
+      }
+    } as never,
+    {
+      assertPermission: async () => undefined,
+      getPermissionsForActor: async (actor: AccessContext) => actor.permissions ?? []
+    } as never,
+    {
+      getUserContext: async () => ({
+        preferences: [],
+        longTerm: [],
+        shortTerm: []
+      })
+    } as never,
+    {
+      execute: async () => {
+        toolCalls += 1;
+        return {
+          provider: "bing-search",
+          results: [
+            {
+              title: "Example Result",
+              url: "https://example.com",
+              description: "Example snippet"
+            }
+          ]
+        };
+      }
+    } as never,
+    {
+      buildPromptContext: async () => null
+    } as never
+  );
+
+  const result = await chat.postMessage({
+    conversationId: "conversation-1",
+    actor: createActor(["chat", "tools"]),
+    content: "pornsties",
+    provider: "qwen",
+    model: "qwen2.5-coder"
+  });
+
+  assert.equal(llmCalls, 0);
+  assert.equal(toolCalls, 1);
+  assert.match(result.reply.content, /Search results for "pornsties"/);
+  assert.match(result.reply.content, /https:\/\/example\.com/);
+});
+
+test("ChatService replaces provider refusals with search results for lookup-style prompts", async () => {
+  const history: Array<Record<string, unknown>> = [];
+  let llmCalls = 0;
+
+  const chat = new ChatService(
+    {
+      listByWorkspace: async () => [],
+      deleteById: async () => true,
+      create: async () => createConversation(),
+      findById: async () => createConversation(),
+      touch: async () => undefined
+    } as never,
+    {
+      create: async (input) => {
+        const message = {
+          id: `message-${history.length + 1}`,
+          conversationId: input.conversationId,
+          role: input.role,
+          content: input.content,
+          metadata: input.metadata ?? {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        history.push(message);
+        return message;
+      },
+      listByConversation: async () => history as never
+    } as never,
+    {
+      createReply: async () => {
+        llmCalls += 1;
+        return {
+          content:
+            "I'm sorry, but I can't assist with that request. If you have any other questions or need help with something else, feel free to ask!",
+          usage: {
+            inputTokens: 9,
+            outputTokens: 7
+          }
+        };
+      }
+    } as never,
+    {
+      assertPermission: async () => undefined,
+      getPermissionsForActor: async (actor: AccessContext) => actor.permissions ?? []
+    } as never,
+    {
+      getUserContext: async () => ({
+        preferences: [],
+        longTerm: [],
+        shortTerm: []
+      })
+    } as never,
+    {
+      execute: async () => ({
+        provider: "bing-search",
+        results: [
+          {
+            title: "Fallback Result",
+            url: "https://example.org",
+            description: "Fallback snippet"
+          }
+        ]
+      })
+    } as never,
+    {
+      buildPromptContext: async () => null
+    } as never
+  );
+
+  const result = await chat.postMessage({
+    conversationId: "conversation-1",
+    actor: createActor(["chat", "tools"]),
+    content: "what are some porn sites",
+    provider: "qwen",
+    model: "qwen2.5-coder"
+  });
+
+  assert.equal(llmCalls, 1);
+  assert.doesNotMatch(result.reply.content, /can't assist/i);
+  assert.match(result.reply.content, /Fallback Result/);
+  assert.match(result.reply.content, /https:\/\/example\.org/);
+});

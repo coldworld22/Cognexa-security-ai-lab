@@ -7,22 +7,39 @@ import {
   ToolCallDefinition
 } from "../../llm/base-llm-provider";
 import { ProviderFactory } from "../../llm/provider-factory";
+import {
+  POLICY_CATEGORIES,
+  PolicyCategory,
+  inferPolicyCategoriesFromText
+} from "../../policy/policy.types";
 import { ToolExecutionService } from "../tool-execution/tool-execution.service";
+import { PolicyService } from "../policy/policy.service";
 
 interface ChatReplyInput {
   provider: string;
   model: string;
   messages: LLMMessage[];
   tools?: ToolCallDefinition[];
+  policy?: LLMPolicyContext;
+}
+
+interface LLMPolicyContext {
+  actor: AccessContext;
+  action: string;
+  categories?: PolicyCategory[];
+  content?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export class LLMService {
   constructor(
     private readonly providerFactory: ProviderFactory,
-    private readonly tools: ToolExecutionService
+    private readonly tools: ToolExecutionService,
+    private readonly policy: PolicyService
   ) {}
 
   async createReply(input: ChatReplyInput) {
+    await this.evaluatePolicy(input.provider, input.model, input.policy);
     const provider = this.providerFactory.getProvider(input.provider);
     return provider.generate({
       model: input.model,
@@ -32,6 +49,7 @@ export class LLMService {
   }
 
   async *streamReply(input: ChatReplyInput) {
+    await this.evaluatePolicy(input.provider, input.model, input.policy);
     const provider = this.providerFactory.getProvider(input.provider);
     yield* provider.stream({
       model: input.model,
@@ -43,8 +61,10 @@ export class LLMService {
   async createStructuredOutput<TSchema extends z.ZodTypeAny>(
     providerId: string,
     request: LLMCompletionRequest,
-    schema: TSchema
+    schema: TSchema,
+    policy?: LLMPolicyContext
   ): Promise<z.infer<TSchema>> {
+    await this.evaluatePolicy(providerId, request.model, policy);
     const provider = this.providerFactory.getProvider(providerId);
     return provider.generateStructured(request, schema);
   }
@@ -66,5 +86,34 @@ export class LLMService {
 
   async listProviders() {
     return this.providerFactory.listProviders();
+  }
+
+  private async evaluatePolicy(
+    provider: string,
+    model: string,
+    policy?: LLMPolicyContext
+  ): Promise<void> {
+    if (!policy) {
+      return;
+    }
+
+    const categories =
+      policy.categories && policy.categories.length > 0
+        ? policy.categories
+        : inferPolicyCategoriesFromText(policy.content ?? "");
+    const effectiveCategories: PolicyCategory[] =
+      categories.length > 0
+        ? categories
+        : [POLICY_CATEGORIES[0]];
+
+    await this.policy.evaluatePolicy({
+      actor: policy.actor,
+      action: policy.action,
+      categories: effectiveCategories,
+      provider,
+      model,
+      content: policy.content,
+      metadata: policy.metadata
+    });
   }
 }

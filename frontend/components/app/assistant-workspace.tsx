@@ -21,8 +21,8 @@ import {
   listMemoryContext,
   listMessages,
   listProviders,
-  listWorkspaceSession,
   listTools,
+  listWorkspaceSession,
   storeSession,
   streamConversation,
   switchWorkspace as switchWorkspaceSession
@@ -32,6 +32,7 @@ import {
   AgentTaskSummary,
   ChatMessage,
   ConversationSummary,
+  MemoryContext,
   LlmProviderCatalog,
   MemoryItem,
   ToolDescriptor,
@@ -44,16 +45,22 @@ import {
 } from "@/components/chat/chat-shell";
 import { Sidebar } from "@/components/layout/sidebar";
 import { WorkspaceSettingsPanel } from "@/components/layout/workspace-settings-panel";
+import { LanguageSwitcher } from "@/components/i18n/language-switcher";
 import { AppIdentity } from "@/components/ui/app-identity";
 import { Card } from "@/components/ui/card";
 import { APP_NAME } from "@/lib/branding";
+import { useI18n } from "@/lib/i18n";
 
-function buildConversationTitle(content: string) {
-  return content.trim().slice(0, 48) || "New Chat";
+function buildConversationTitle(content: string, fallback: string) {
+  return content.trim().slice(0, 48) || fallback;
 }
 
-function buildAgentTaskTitle(objective: string) {
-  return objective.trim().slice(0, 52) || "Agent Task";
+function buildAgentTaskTitle(objective: string, fallback: string) {
+  return objective.trim().slice(0, 52) || fallback;
+}
+
+function normalizeModelName(model?: string | null): string {
+  return (model ?? "").replace(/:latest$/i, "").toLowerCase();
 }
 
 const DEFAULT_AGENT_INSTRUCTIONS =
@@ -97,11 +104,30 @@ function selectModelName(
     return "";
   }
 
-  if (preferredModel && provider.models.includes(preferredModel)) {
-    return preferredModel;
+  if (preferredModel) {
+    const exactMatch = provider.models.find(
+      (model) => normalizeModelName(model) === normalizeModelName(preferredModel)
+    );
+
+    if (exactMatch) {
+      return exactMatch;
+    }
   }
 
   return provider.models[0] ?? "";
+}
+
+function buildMemoryItems(memoryContext: MemoryContext): MemoryItem[] {
+  return [
+    ...memoryContext.preferences.slice(0, 3),
+    ...memoryContext.longTerm.slice(0, 3),
+    ...memoryContext.shortTerm.slice(0, 2).map((message, index) => ({
+      id: message.id,
+      memoryType: "short_term" as const,
+      key: `recent_${index + 1}`,
+      value: message.content
+    }))
+  ];
 }
 
 interface AssistantWorkspaceProps {
@@ -112,6 +138,7 @@ export function AssistantWorkspace({
   conversationId: routeConversationId = null
 }: AssistantWorkspaceProps) {
   const router = useRouter();
+  const { dir, t } = useI18n();
   const [session, setSession] = useState<AppSession | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -192,8 +219,17 @@ export function AssistantWorkspace({
       return;
     }
 
-    if (!availableModels.includes(selectedModel)) {
+    const matchedModel = availableModels.find(
+      (model) => normalizeModelName(model) === normalizeModelName(selectedModel)
+    );
+
+    if (!matchedModel) {
       setSelectedModel(availableModels[0]!);
+      return;
+    }
+
+    if (matchedModel !== selectedModel) {
+      setSelectedModel(matchedModel);
     }
   }, [availableModels, selectedModel]);
 
@@ -236,12 +272,19 @@ export function AssistantWorkspace({
       const workspaceSession = await listWorkspaceSession();
       applyWorkspaceSession(workspaceSession);
 
-      const [providerList, toolList, memoryContext, conversationList] = await Promise.all([
+      const [providerResult, toolsResult, memoryResult, conversationsResult] =
+        await Promise.allSettled([
         listProviders(),
         listTools(),
         listMemoryContext(),
         listConversations()
       ]);
+
+      if (providerResult.status !== "fulfilled") {
+        throw providerResult.reason;
+      }
+
+      const providerList = providerResult.value;
 
       setProviders(providerList);
       const providerSelection = selectProviderCatalog(providerList, selectedProvider);
@@ -250,21 +293,27 @@ export function AssistantWorkspace({
         setSelectedModel(selectModelName(providerSelection, selectedModel));
       }
 
-      setTools(toolList);
-      setSelectedToolNames((current) =>
-        current.length > 0 ? current : toolList.map((tool) => tool.name)
-      );
-      setMemoryItems([
-        ...memoryContext.preferences.slice(0, 3),
-        ...memoryContext.longTerm.slice(0, 3),
-        ...memoryContext.shortTerm.slice(0, 2).map((message, index) => ({
-          id: message.id,
-          memoryType: "short_term" as const,
-          key: `recent_${index + 1}`,
-          value: message.content
-        }))
-      ]);
-      setConversations(conversationList);
+      if (toolsResult.status === "fulfilled") {
+        setTools(toolsResult.value);
+        setSelectedToolNames((current) =>
+          current.length > 0 ? current : toolsResult.value.map((tool) => tool.name)
+        );
+      } else {
+        setTools([]);
+        setSelectedToolNames([]);
+      }
+
+      if (memoryResult.status === "fulfilled") {
+        setMemoryItems(buildMemoryItems(memoryResult.value));
+      } else {
+        setMemoryItems([]);
+      }
+
+      if (conversationsResult.status === "fulfilled") {
+        setConversations(conversationsResult.value);
+      } else {
+        setConversations([]);
+      }
 
       try {
         const taskList = await listAgentTasks();
@@ -280,14 +329,14 @@ export function AssistantWorkspace({
         }
       } catch (taskError) {
         setAgentError(
-          taskError instanceof Error ? taskError.message : "Failed to load agent tasks."
+          taskError instanceof Error ? taskError.message : t("workspace.taskLoadFailed")
         );
       }
     } catch (bootstrapError) {
       const message =
         bootstrapError instanceof Error
           ? bootstrapError.message
-          : "Failed to initialize the assistant workspace.";
+          : t("workspace.initializeFailed");
       setError(message);
 
       if (message.toLowerCase().includes("session")) {
@@ -338,7 +387,7 @@ export function AssistantWorkspace({
     if (!selected) {
       setSelectedConversationId(null);
       setMessages([]);
-      setError("Conversation not found.");
+      setError(t("workspace.conversationNotFound"));
       return;
     }
 
@@ -363,7 +412,7 @@ export function AssistantWorkspace({
       setError(
         messageError instanceof Error
           ? messageError.message
-          : "Failed to load conversation messages."
+          : t("workspace.loadMessagesFailed")
       );
     } finally {
       setIsLoadingMessages(false);
@@ -390,16 +439,7 @@ export function AssistantWorkspace({
 
   async function refreshMemoryState() {
     const memoryContext = await listMemoryContext();
-    setMemoryItems([
-      ...memoryContext.preferences.slice(0, 3),
-      ...memoryContext.longTerm.slice(0, 3),
-      ...memoryContext.shortTerm.slice(0, 2).map((message, index) => ({
-        id: message.id,
-        memoryType: "short_term" as const,
-        key: `recent_${index + 1}`,
-        value: message.content
-      }))
-    ]);
+    setMemoryItems(buildMemoryItems(memoryContext));
   }
 
   async function refreshTasksState(nextSelectedId?: string) {
@@ -443,7 +483,7 @@ export function AssistantWorkspace({
       }
     } catch (taskError) {
       setAgentError(
-        taskError instanceof Error ? taskError.message : "Failed to refresh running task."
+        taskError instanceof Error ? taskError.message : t("workspace.refreshTaskFailed")
       );
       pollingTaskIdRef.current = null;
     }
@@ -475,7 +515,7 @@ export function AssistantWorkspace({
       setSelectedTaskDetail(taskDetail);
     } catch (taskError) {
       setAgentError(
-        taskError instanceof Error ? taskError.message : "Failed to load task detail."
+        taskError instanceof Error ? taskError.message : t("workspace.loadTaskFailed")
       );
     } finally {
       setIsLoadingTaskDetail(false);
@@ -498,7 +538,7 @@ export function AssistantWorkspace({
       await refreshTasksState();
     } catch (taskError) {
       setAgentError(
-        taskError instanceof Error ? taskError.message : "Failed to refresh agent tasks."
+        taskError instanceof Error ? taskError.message : t("workspace.refreshTasksFailed")
       );
     } finally {
       setIsLoadingTaskDetail(false);
@@ -507,7 +547,9 @@ export function AssistantWorkspace({
 
   async function handleCreateConversation(seedContent?: string) {
     const conversation = await createConversation({
-      title: seedContent ? buildConversationTitle(seedContent) : "New Chat",
+      title: seedContent
+        ? buildConversationTitle(seedContent, t("workspace.conversationTitleFallback"))
+        : t("workspace.conversationTitleFallback"),
       provider: selectedProvider,
       model: selectedModel
     });
@@ -536,7 +578,9 @@ export function AssistantWorkspace({
       typeof window === "undefined"
         ? true
         : window.confirm(
-            `Delete "${target?.title ?? "this chat"}"? This will remove its messages permanently.`
+            t("workspace.deleteConversationConfirm", {
+              title: target?.title ?? t("workspace.conversationTitleFallback")
+            })
           );
 
     if (!confirmed) {
@@ -561,7 +605,7 @@ export function AssistantWorkspace({
       }
     } catch (deleteError) {
       setError(
-        deleteError instanceof Error ? deleteError.message : "Failed to delete conversation."
+        deleteError instanceof Error ? deleteError.message : t("workspace.deleteConversationFailed")
       );
     } finally {
       setDeletingConversationId(null);
@@ -575,7 +619,7 @@ export function AssistantWorkspace({
     }
 
     if (selectedToolNames.length === 0) {
-      setAgentError("Select at least one tool before launching an agent task.");
+      setAgentError(t("workspace.noToolsSelected"));
       return;
     }
 
@@ -585,8 +629,8 @@ export function AssistantWorkspace({
 
     try {
       const result = await executeAgent({
-        name: buildAgentTaskTitle(objective),
-        description: "Tool-assisted workspace task",
+        name: buildAgentTaskTitle(objective, t("workspace.taskTitleFallback")),
+        description: t("agents.toolAssistedTask"),
         instructions: DEFAULT_AGENT_INSTRUCTIONS,
         enabledTools: selectedToolNames,
         objective,
@@ -605,7 +649,7 @@ export function AssistantWorkspace({
       pollingTaskIdRef.current = result.task.id;
       setAgentObjective("");
     } catch (runError) {
-      setAgentError(runError instanceof Error ? runError.message : "Agent execution failed.");
+      setAgentError(runError instanceof Error ? runError.message : t("workspace.agentExecutionFailed"));
     } finally {
       setIsRunningAgent(false);
     }
@@ -635,7 +679,7 @@ export function AssistantWorkspace({
       setError(
         workspaceError instanceof Error
           ? workspaceError.message
-          : "Failed to switch workspace."
+          : t("workspace.switchWorkspaceFailed")
       );
     }
   }
@@ -644,7 +688,10 @@ export function AssistantWorkspace({
     const name =
       typeof window === "undefined"
         ? ""
-        : window.prompt("Workspace name", `${session?.user.displayName ?? "New"} Workspace`) ?? "";
+        : window.prompt(
+            t("workspace.workspaceNamePrompt"),
+            `${session?.user.displayName ?? t("common.new")} ${t("common.workspace")}`
+          ) ?? "";
     const trimmedName = name.trim();
     if (!trimmedName) {
       return;
@@ -653,7 +700,10 @@ export function AssistantWorkspace({
     const organizationName =
       typeof window === "undefined"
         ? undefined
-        : window.prompt("Organization name (optional)", `${trimmedName} Organization`) ?? undefined;
+        : window.prompt(
+            t("workspace.organizationNamePrompt"),
+            `${trimmedName} Organization`
+          ) ?? undefined;
 
     setError(null);
 
@@ -673,14 +723,16 @@ export function AssistantWorkspace({
       setError(
         workspaceError instanceof Error
           ? workspaceError.message
-          : "Failed to create workspace."
+          : t("workspace.createWorkspaceFailed")
       );
     }
   }
 
   async function handleInviteMember() {
     const email =
-      typeof window === "undefined" ? "" : window.prompt("Invite member email", "") ?? "";
+      typeof window === "undefined"
+        ? ""
+        : window.prompt(t("workspace.inviteEmailPrompt"), "") ?? "";
     const normalizedEmail = email.trim();
     if (!normalizedEmail) {
       return;
@@ -689,7 +741,7 @@ export function AssistantWorkspace({
     const roleInput =
       typeof window === "undefined"
         ? "member"
-        : window.prompt("Workspace role: owner, admin, member, or viewer", "member") ?? "member";
+        : window.prompt(t("workspace.inviteRolePrompt"), "member") ?? "member";
     const normalizedRole = roleInput.trim().toLowerCase();
     const role =
       normalizedRole === "owner" ||
@@ -711,11 +763,16 @@ export function AssistantWorkspace({
         : "";
 
       if (typeof window !== "undefined") {
-        window.alert(`Invitation created for ${invitation.email}.${tokenNotice}`);
+        window.alert(
+          t("workspace.invitationCreated", {
+            email: invitation.email,
+            tokenNotice
+          })
+        );
       }
     } catch (inviteError) {
       setError(
-        inviteError instanceof Error ? inviteError.message : "Failed to invite member."
+        inviteError instanceof Error ? inviteError.message : t("workspace.inviteMemberFailed")
       );
     }
   }
@@ -736,7 +793,7 @@ export function AssistantWorkspace({
       setError(
         invitationError instanceof Error
           ? invitationError.message
-          : "Failed to accept invitation."
+          : t("workspace.acceptInvitationFailed")
       );
     }
   }
@@ -748,7 +805,11 @@ export function AssistantWorkspace({
     }
 
     if (!availableModels.includes(selectedModel)) {
-      setError(`No installed local model is available for provider '${selectedProvider}'.`);
+      setError(
+        t("workspace.noModelAvailable", {
+          provider: selectedProvider
+        })
+      );
       return;
     }
 
@@ -791,7 +852,10 @@ export function AssistantWorkspace({
         }
       });
 
-      await Promise.all([refreshConversationsState(conversationId), refreshMemoryState()]);
+      await Promise.allSettled([
+        refreshConversationsState(conversationId),
+        refreshMemoryState()
+      ]);
 
       if (createdConversationId) {
         startTransition(() => {
@@ -799,7 +863,7 @@ export function AssistantWorkspace({
         });
       }
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : "Message send failed.");
+      setError(sendError instanceof Error ? sendError.message : t("workspace.sendMessageFailed"));
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantMessage.id
@@ -808,7 +872,7 @@ export function AssistantWorkspace({
                 content:
                   sendError instanceof Error
                     ? `Request failed: ${sendError.message}`
-                    : "Request failed."
+                    : t("workspace.sendMessageFailed")
               }
             : message
         )
@@ -862,13 +926,13 @@ export function AssistantWorkspace({
           <Card className="p-10">
             <AppIdentity size="lg" />
             <p className="mt-8 text-sm font-semibold uppercase tracking-[0.22em] text-black/40">
-              Bootstrapping
+              {t("workspace.bootstrapping")}
             </p>
             <h1 className="mt-3 text-4xl font-semibold tracking-[-0.04em] text-[#111827]">
-              Connecting {APP_NAME}
+              {t("workspace.connectingTitle")}
             </h1>
             <p className="mt-4 max-w-2xl text-sm leading-6 text-black/60">
-              Loading your session, model catalog, tools, memory, and conversations.
+              {t("workspace.connectingDescription")}
             </p>
           </Card>
         </div>
@@ -876,7 +940,7 @@ export function AssistantWorkspace({
     );
   }
 
-  if (!session) {
+  if (!session?.user) {
     return (
       <main className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-6 md:px-6">
         <div className="mx-auto grid w-full max-w-5xl gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -914,13 +978,13 @@ export function AssistantWorkspace({
           <Card className="flex flex-col justify-between p-8">
             <div>
               <p className="text-xs uppercase tracking-[0.22em] text-black/45">
-                Authentication Required
+                {t("workspace.authRequired")}
               </p>
               <h2 className="mt-3 text-3xl font-semibold tracking-[-0.04em] text-[#111827]">
-                Sign in before using {APP_NAME}
+                {t("workspace.signInBeforeUsing")}
               </h2>
               <p className="mt-4 text-sm leading-6 text-black/60">
-                Live conversation, memory, providers, and tools require an authenticated session.
+                {t("workspace.signInDescription")}
               </p>
             </div>
             <div className="mt-8">
@@ -928,7 +992,7 @@ export function AssistantWorkspace({
                 href="/login"
                 className="inline-flex rounded-full bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-5 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.22)] transition hover:brightness-105"
               >
-                Go to Login
+                {t("workspace.goToLogin")}
               </Link>
             </div>
           </Card>
@@ -937,9 +1001,11 @@ export function AssistantWorkspace({
     );
   }
 
+  const userDisplayName = session.user.displayName || t("common.workspace");
+  const userEmail = session.user.email || "";
   const sidebarProps = {
-    userName: session.user.displayName,
-    userEmail: session.user.email,
+    userName: userDisplayName,
+    userEmail,
     currentWorkspace,
     pendingInvitationsCount: pendingInvitations.length,
     conversations,
@@ -963,7 +1029,7 @@ export function AssistantWorkspace({
           <div className="min-w-0">
             <AppIdentity size="sm" showSubtitle={false} showTagline={false} />
             <p className="mt-2 truncate text-sm text-[var(--text-secondary)]">
-              {currentWorkspace?.name ?? "Workspace"}
+              {currentWorkspace?.name ?? t("common.workspace")}
             </p>
           </div>
           <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
@@ -973,7 +1039,7 @@ export function AssistantWorkspace({
               className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-medium text-[var(--text-primary)] transition hover:bg-white"
             >
               <Settings2 className="size-4" />
-              Workspace
+              {t("workspace.mobileWorkspace")}
             </button>
             <button
               type="button"
@@ -984,7 +1050,7 @@ export function AssistantWorkspace({
               className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white/70 px-3 py-2 text-sm font-medium text-[var(--text-primary)] transition hover:bg-white"
             >
               <Menu className="size-4" />
-              Menu
+              {t("workspace.mobileMenu")}
             </button>
           </div>
         </div>
@@ -995,8 +1061,8 @@ export function AssistantWorkspace({
           </div>
           <ChatShell
             currentWorkspace={currentWorkspace}
-            userName={session.user.displayName}
-            userEmail={session.user.email}
+            userName={userDisplayName}
+            userEmail={userEmail}
             conversationTitle={selectedConversation?.title ?? "New Chat"}
             conversationCount={conversations.length}
             pendingInvitationCount={pendingInvitations.length}
@@ -1037,12 +1103,14 @@ export function AssistantWorkspace({
             className="absolute inset-0"
             onClick={() => setIsNavigationOpen(false)}
           />
-          <div className="absolute inset-y-3 left-3 right-16 max-w-sm">
+          <div
+            className={`absolute inset-y-3 max-w-sm ${dir === "rtl" ? "left-16 right-3" : "left-3 right-16"}`}
+          >
             <button
               type="button"
               onClick={() => setIsNavigationOpen(false)}
-              className="absolute right-3 top-3 z-10 inline-flex items-center justify-center rounded-full border border-white/15 bg-white/10 p-2 text-white transition hover:bg-white/15"
-              aria-label="Close navigation"
+              className={`absolute top-3 z-10 inline-flex items-center justify-center rounded-full border border-white/15 bg-white/10 p-2 text-white transition hover:bg-white/15 ${dir === "rtl" ? "left-3" : "right-3"}`}
+              aria-label={t("common.close")}
             >
               <X className="size-4" />
             </button>
@@ -1051,17 +1119,17 @@ export function AssistantWorkspace({
         </div>
       ) : null}
 
-      <WorkspaceSettingsPanel
-        isOpen={isWorkspaceOpen}
-        section={workspacePanelSection}
-        currentWorkspace={currentWorkspace}
-        workspaces={workspaces}
-        pendingInvitations={pendingInvitations}
-        userName={session.user.displayName}
-        userEmail={session.user.email}
-        onClose={() => setIsWorkspaceOpen(false)}
-        onCreateWorkspace={handleCreateWorkspace}
-        onSwitchWorkspace={handleSwitchWorkspace}
+        <WorkspaceSettingsPanel
+          isOpen={isWorkspaceOpen}
+          section={workspacePanelSection}
+          currentWorkspace={currentWorkspace}
+          workspaces={workspaces}
+          pendingInvitations={pendingInvitations}
+          userName={userDisplayName}
+          userEmail={userEmail}
+          onClose={() => setIsWorkspaceOpen(false)}
+          onCreateWorkspace={handleCreateWorkspace}
+          onSwitchWorkspace={handleSwitchWorkspace}
         onInviteMember={handleInviteMember}
         onAcceptInvitation={handleAcceptInvitation}
         onLogout={handleLogout}

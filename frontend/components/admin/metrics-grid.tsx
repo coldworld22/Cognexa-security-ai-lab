@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { getAdminDashboard } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import { AdminDashboard, DashboardMetric } from "@/lib/types";
 import { Card } from "@/components/ui/card";
 
@@ -10,41 +11,50 @@ interface MetricsGridProps {
   refreshKey?: string | number;
 }
 
-function formatCount(value: number): string {
-  return new Intl.NumberFormat().format(value);
-}
-
-function buildMetrics(dashboard: AdminDashboard): DashboardMetric[] {
+function buildMetrics(
+  dashboard: AdminDashboard,
+  formatCount: (value: number) => string,
+  t: (key: string, values?: Record<string, string | number>) => string
+): DashboardMetric[] {
   const { conversations, files, toolExecutions, localModel } = dashboard.metrics;
 
   return [
     {
-      label: "Conversations",
+      label: t("metrics.conversations"),
       value: formatCount(conversations.total),
-      change: `+${formatCount(conversations.last7Days)} in the last 7 days`
+      change: t("metrics.conversationsChange", {
+        count: formatCount(conversations.last7Days)
+      })
     },
     {
-      label: "Indexed Files",
+      label: t("metrics.indexedFiles"),
       value: formatCount(files.indexed),
-      change: `+${formatCount(files.indexedToday)} indexed in the last 24h`
+      change: t("metrics.indexedFilesChange", {
+        count: formatCount(files.indexedToday)
+      })
     },
     {
-      label: "Tool Executions",
+      label: t("metrics.toolExecutions"),
       value: formatCount(toolExecutions.total),
-      change: `${toolExecutions.successRate}% success`
+      change: t("metrics.toolExecutionsChange", {
+        rate: toolExecutions.successRate
+      })
     },
     {
-      label: "Local Model Latency",
-      value: localModel.latencyMs === null ? "Offline" : `${localModel.latencyMs}ms`,
+      label: t("metrics.localModelLatency"),
+      value: localModel.latencyMs === null ? t("common.status.offline") : `${localModel.latencyMs}ms`,
       change:
         localModel.status === "up"
-          ? `${localModel.providerCount} providers available`
-          : "Model endpoint unreachable"
+          ? t("metrics.providersAvailable", {
+              count: formatCount(localModel.providerCount)
+            })
+          : t("metrics.modelEndpointUnreachable")
     }
   ];
 }
 
 export function MetricsGrid({ refreshKey }: MetricsGridProps) {
+  const { formatNumber, t } = useI18n();
   const [metrics, setMetrics] = useState<DashboardMetric[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -59,12 +69,12 @@ export function MetricsGrid({ refreshKey }: MetricsGridProps) {
       try {
         const dashboard = await getAdminDashboard();
         if (!cancelled) {
-          setMetrics(buildMetrics(dashboard));
+          setMetrics(buildMetrics(dashboard, formatNumber, t));
         }
       } catch (loadError) {
         if (!cancelled) {
           setError(
-            loadError instanceof Error ? loadError.message : "Failed to load metrics."
+            loadError instanceof Error ? loadError.message : t("metrics.loadFailed")
           );
         }
       } finally {
@@ -79,12 +89,12 @@ export function MetricsGrid({ refreshKey }: MetricsGridProps) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [formatNumber, refreshKey, t]);
 
   if (error) {
     return (
       <Card className="border-red-200 bg-red-50/80">
-        <p className="text-xs uppercase tracking-[0.22em] text-red-700">Metrics Unavailable</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-red-700">{t("metrics.unavailable")}</p>
         <p className="mt-2 text-sm text-red-600">{error}</p>
       </Card>
     );

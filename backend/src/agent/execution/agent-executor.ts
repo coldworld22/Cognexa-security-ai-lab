@@ -12,6 +12,7 @@ import {
   RetrievalContextMetadata,
   RetrievalPromptContext
 } from "../../rag/retrieval/retrieval-context.types";
+import { inferPolicyCategoriesFromText } from "../../policy/policy.types";
 
 export interface ExecuteAgentPlanInput {
   actor: AccessContext;
@@ -54,6 +55,7 @@ export class AgentExecutor {
       input.actor,
       input.agent.enabledTools
     );
+    const executableTools = this.filterExecutableTools(availableTools);
     const metadata = this.createInitialMetadata(input.plan, input.metadata);
     const retrieval = await this.resolveRetrievedContext(
       input.actor.workspaceId,
@@ -78,9 +80,10 @@ export class AgentExecutor {
 
       try {
         const decision = await this.decideNextAction({
+          actor: input.actor,
           objective: input.objective,
           step,
-          availableTools,
+          availableTools: executableTools,
           metadata,
           retrieval
         });
@@ -97,6 +100,18 @@ export class AgentExecutor {
             step.status = "skipped";
             step.finishedAt = new Date().toISOString();
             step.error = `Requested tool ${decision.toolName ?? "unknown"} is not available`;
+            await input.onProgress?.(this.snapshot(metadata));
+            continue;
+          }
+
+          const executableTool = executableTools.find(
+            (tool) => tool.name === decision.toolName
+          );
+
+          if (!executableTool) {
+            step.status = "skipped";
+            step.finishedAt = new Date().toISOString();
+            step.error = `Requested tool ${decision.toolName ?? "unknown"} is blocked by policy`;
             await input.onProgress?.(this.snapshot(metadata));
             continue;
           }
@@ -149,10 +164,11 @@ export class AgentExecutor {
     }
 
     const summary = await this.synthesizeResult(
+      input.actor,
       input.agent.instructions,
       input.objective,
       metadata,
-      availableTools,
+      executableTools,
       retrieval
     );
 
@@ -218,7 +234,12 @@ export class AgentExecutor {
     return allTools.filter((tool) => enabledTools.includes(tool.name));
   }
 
+  private filterExecutableTools(tools: ToolMetadata[]): ToolMetadata[] {
+    return tools.filter((tool) => !tool.blocked && !tool.requiresApproval);
+  }
+
   private async decideNextAction(input: {
+    actor: AccessContext;
     objective: string;
     step: TaskStepTrace;
     availableTools: ToolMetadata[];
@@ -271,7 +292,17 @@ export class AgentExecutor {
             }
           ]
         },
-        toolDecisionSchema
+        toolDecisionSchema,
+        {
+          actor: input.actor,
+          action: "agents.plan_step",
+          categories: inferPolicyCategoriesFromText(input.objective),
+          content: input.objective,
+          metadata: {
+            stepId: input.step.id,
+            availableTools: input.availableTools.map((tool) => tool.name)
+          }
+        }
       );
 
       if (
@@ -448,6 +479,7 @@ export class AgentExecutor {
   }
 
   private async synthesizeResult(
+    actor: AccessContext,
     instructions: string,
     objective: string,
     metadata: TaskMetadata,
@@ -473,7 +505,16 @@ export class AgentExecutor {
             reasoningLog: metadata.reasoningLog
           })
         }
-      ]
+      ],
+      policy: {
+        actor,
+        action: "agents.summarize_result",
+        categories: inferPolicyCategoriesFromText(objective),
+        content: objective,
+        metadata: {
+          availableTools: availableTools.map((tool) => tool.name)
+        }
+      }
     });
 
     return response.content;

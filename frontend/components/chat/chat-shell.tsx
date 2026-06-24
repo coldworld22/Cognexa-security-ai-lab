@@ -14,8 +14,11 @@ import {
   Wrench
 } from "lucide-react";
 
+import { NetworkMonitorConsole } from "@/components/admin/network-monitor-console";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { LanguageSwitcher } from "@/components/i18n/language-switcher";
+import { useI18n } from "@/lib/i18n";
 import {
   AgentTaskDetail,
   AgentTaskStatus,
@@ -33,6 +36,7 @@ import { MessageList } from "./message-list";
 
 export type WorkspaceView =
   | "chat"
+  | "endpoints"
   | "documents"
   | "agents"
   | "memory"
@@ -77,22 +81,16 @@ interface ChatShellProps {
   onSend: (message: string) => void | Promise<void>;
 }
 
-const workspaceTabs: Array<{ id: WorkspaceView; label: string }> = [
-  { id: "chat", label: "Chat" },
-  { id: "documents", label: "Documents" },
-  { id: "agents", label: "Agents" },
-  { id: "memory", label: "Memory" },
-  { id: "tasks", label: "Tasks" },
-  { id: "security", label: "Security" }
-];
-
-function formatTimestamp(value?: string) {
+function formatTimestamp(
+  value: string | undefined,
+  fallback: string,
+  formatDateTime: (value: string, options?: Intl.DateTimeFormatOptions) => string
+) {
   if (!value) {
-    return "Pending";
+    return fallback;
   }
 
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return formatDateTime(value);
 }
 
 function statusBadgeClass(
@@ -120,6 +118,23 @@ function serializeValue(value: unknown, limit = 520): string {
   return serialized.length > limit ? `${serialized.slice(0, limit)}...` : serialized;
 }
 
+function statusLabel(
+  status: AgentTaskStatus | AgentTaskStepStatus | "started",
+  t: (key: string) => string
+) {
+  const statusKeyMap: Record<AgentTaskStatus | AgentTaskStepStatus | "started", string> = {
+    queued: "common.status.queued",
+    pending: "common.status.pending",
+    running: "common.status.running",
+    completed: "common.status.completed",
+    failed: "common.status.failed",
+    skipped: "common.status.skipped",
+    started: "common.status.started"
+  };
+
+  return t(statusKeyMap[status] ?? "common.status.pending");
+}
+
 function WorkspaceTabs({
   activeView,
   onChange
@@ -127,6 +142,17 @@ function WorkspaceTabs({
   activeView: WorkspaceView;
   onChange: (view: WorkspaceView) => void;
 }) {
+  const { t } = useI18n();
+  const workspaceTabs: Array<{ id: WorkspaceView; label: string }> = [
+    { id: "chat", label: t("common.chat") },
+    { id: "endpoints", label: t("common.endpoints") },
+    { id: "documents", label: t("common.documents") },
+    { id: "agents", label: t("common.agents") },
+    { id: "memory", label: t("common.memory") },
+    { id: "tasks", label: t("common.tasks") },
+    { id: "security", label: t("common.security") }
+  ];
+
   return (
     <nav className="border-b border-black/5 px-3 py-3 sm:px-5 lg:px-6">
       <div className="mx-auto flex max-w-6xl gap-2 overflow-x-auto pb-1">
@@ -163,6 +189,7 @@ function DocumentsView({
   selectedModel: string;
   tools: ToolDescriptor[];
 }) {
+  const { formatNumber, t } = useI18n();
   const retrievalTools = tools.filter((tool) =>
     ["documentation", "repository", "filesystem", "database"].includes(tool.category)
   );
@@ -174,44 +201,46 @@ function DocumentsView({
         <div className="flex items-center gap-2">
           <BookText className="size-4 text-[var(--brand-blue)]" />
           <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-            Document Workspace
+            {t("documents.title")}
           </h3>
         </div>
         <h2 className="mt-4 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-          Retrieval and document analysis stay attached to the active workspace.
+          {t("documents.headline")}
         </h2>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]">
-          Cognexa already scaffolds ingestion, embeddings, and persisted retrieval. Use chat for
-          ad-hoc analysis, or use agent tasks when you need repeatable multi-step investigation.
+          {t("documents.description")}
         </p>
 
         <div className="mt-6 grid gap-3 md:grid-cols-3">
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Pipeline
+              {t("documents.pipeline")}
             </p>
             <p className="mt-3 text-sm text-[var(--text-secondary)]">
-              Uploads, parsing, chunking, embeddings, and vector storage are all represented in the
-              current stack.
+              {t("documents.pipelineDescription")}
             </p>
           </div>
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Runtime
+              {t("documents.runtime")}
             </p>
             <p className="mt-3 text-sm text-[var(--text-secondary)]">
-              Active model:{" "}
               <span className="font-medium text-[var(--text-primary)]">
-                {selectedProvider} / {compactModel}
+                {t("documents.runtimeDescription", {
+                  provider: selectedProvider,
+                  model: compactModel
+                })}
               </span>
             </p>
           </div>
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Tool Surfaces
+              {t("documents.toolSurfaces")}
             </p>
             <p className="mt-3 text-sm text-[var(--text-secondary)]">
-              {retrievalTools.length} document-oriented tools are available in this workspace.
+              {t("documents.toolSurfacesDescription", {
+                count: formatNumber(retrievalTools.length)
+              })}
             </p>
           </div>
         </div>
@@ -221,14 +250,14 @@ function DocumentsView({
         <div className="flex items-center gap-2">
           <Database className="size-4 text-[var(--brand-blue)]" />
           <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-            Tool Inventory
+            {t("documents.inventory")}
           </h3>
         </div>
 
         <div className="mt-4 space-y-3">
           {retrievalTools.length === 0 ? (
             <div className="rounded-[22px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-              No retrieval-oriented tools are currently exposed to the frontend.
+              {t("documents.noTools")}
             </div>
           ) : (
             retrievalTools.map((tool) => (
@@ -283,35 +312,36 @@ function AgentsView({
   onRefreshTasks: () => void | Promise<void>;
   onOpenTask: (taskId: string) => void | Promise<void>;
 }) {
+  const { formatNumber, t } = useI18n();
+
   return (
     <div className="mx-auto grid max-w-6xl gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(330px,0.95fr)]">
       <Card className="p-6">
         <div className="flex items-center gap-2">
           <Bot className="size-4 text-[var(--brand-blue)]" />
           <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-            Agent Console
+            {t("agents.console")}
           </h3>
         </div>
         <h2 className="mt-4 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-          Launch tool-assisted tasks against the current workspace.
+          {t("agents.headline")}
         </h2>
         <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-          This is the execution surface for repeatable investigations, engineering checks, and
-          workspace-wide analysis.
+          {t("agents.description")}
         </p>
 
         <textarea
           value={agentObjective}
           onChange={(event) => onAgentObjectiveChange(event.target.value)}
-          placeholder="Summarize the RAG pipeline, inspect repository auth flow, or review task traces."
+          placeholder={t("agents.placeholder")}
           className="mt-5 min-h-[150px] w-full rounded-[24px] border border-black/10 bg-white/88 px-4 py-4 text-[15px] leading-7 text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35"
         />
 
         <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-            Enabled tools
+            {t("agents.enabledTools")}
           </p>
-          <Badge>{selectedToolNames.length} selected</Badge>
+          <Badge>{t("common.selected", { count: formatNumber(selectedToolNames.length) })}</Badge>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
@@ -357,7 +387,7 @@ function AgentsView({
             ) : (
               <Sparkles className="size-4" />
             )}
-            {isRunningAgent ? "Running Task" : "Run Task"}
+            {isRunningAgent ? t("agents.runningTask") : t("agents.runTask")}
           </button>
           <button
             type="button"
@@ -368,7 +398,7 @@ function AgentsView({
             className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCw className={cn("size-4", isLoadingTaskDetail && "animate-spin")} />
-            Refresh Tasks
+            {t("agents.refreshTasks")}
           </button>
         </div>
       </Card>
@@ -378,12 +408,12 @@ function AgentsView({
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Recent Runs
+                {t("agents.recentRuns")}
               </h3>
               <p className="mt-2 text-sm text-[var(--text-secondary)]">
                 {tasks.length === 0
-                  ? "No persisted agent runs yet."
-                  : `${tasks.length} persisted runs available.`}
+                  ? t("agents.noRuns")
+                  : t("agents.persistedRuns", { count: formatNumber(tasks.length) })}
               </p>
             </div>
             {isLoadingTaskDetail ? (
@@ -392,11 +422,11 @@ function AgentsView({
           </div>
 
           <div className="mt-4 space-y-3">
-            {tasks.length === 0 ? (
-              <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-                Run an objective to populate workspace task history.
-              </div>
-            ) : (
+          {tasks.length === 0 ? (
+            <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
+              {t("agents.populateHistory")}
+            </div>
+          ) : (
               tasks.slice(0, 4).map((task) => (
                 <button
                   key={task.id}
@@ -415,7 +445,7 @@ function AgentsView({
                     <p className="text-sm font-semibold text-[var(--text-primary)]">
                       {task.title}
                     </p>
-                    <Badge className={statusBadgeClass(task.status)}>{task.status}</Badge>
+                    <Badge className={statusBadgeClass(task.status)}>{statusLabel(task.status, t)}</Badge>
                   </div>
                   <p className="mt-3 line-clamp-2 text-sm text-[var(--text-secondary)]">
                     {task.objective}
@@ -430,12 +460,12 @@ function AgentsView({
           <div className="flex items-center gap-2">
             <SendHorizontal className="size-4 text-[var(--brand-blue)]" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Active Trace
+              {t("agents.activeTrace")}
             </h3>
           </div>
           {!selectedTaskDetail ? (
             <div className="mt-4 rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-              Select a task to inspect detail in the Tasks tab.
+              {t("agents.selectTask")}
             </div>
           ) : (
             <div className="mt-4 rounded-[20px] border border-black/6 bg-[var(--surface-soft)] p-4">
@@ -444,12 +474,12 @@ function AgentsView({
                   {selectedTaskDetail.task.title}
                 </p>
                 <Badge className={statusBadgeClass(selectedTaskDetail.task.status)}>
-                  {selectedTaskDetail.task.status}
+                  {statusLabel(selectedTaskDetail.task.status, t)}
                 </Badge>
               </div>
               <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                 {selectedTaskDetail.task.result ??
-                  "Open the full task trace to inspect steps, reasoning, and tool executions."}
+                  t("agents.openTrace")}
               </p>
             </div>
           )}
@@ -460,6 +490,7 @@ function AgentsView({
 }
 
 function MemoryView({ memoryItems }: { memoryItems: MemoryItem[] }) {
+  const { t } = useI18n();
   const sections: Array<{
     id: MemoryItem["memoryType"];
     title: string;
@@ -467,18 +498,18 @@ function MemoryView({ memoryItems }: { memoryItems: MemoryItem[] }) {
   }> = [
     {
       id: "preference",
-      title: "Preferences",
-      description: "Stable operator preferences and workspace-specific behavior."
+      title: t("memory.preferences"),
+      description: t("memory.preferencesDescription")
     },
     {
       id: "long_term",
-      title: "Long-Term Memory",
-      description: "Persisted knowledge carried across conversations."
+      title: t("memory.longTerm"),
+      description: t("memory.longTermDescription")
     },
     {
       id: "short_term",
-      title: "Short-Term Context",
-      description: "Recent conversation context feeding the current workspace."
+      title: t("memory.shortTerm"),
+      description: t("memory.shortTermDescription")
     }
   ];
 
@@ -501,7 +532,7 @@ function MemoryView({ memoryItems }: { memoryItems: MemoryItem[] }) {
             <div className="mt-5 space-y-3">
               {items.length === 0 ? (
                 <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-                  No {section.title.toLowerCase()} entries yet.
+                  {t("memory.noEntries", { section: section.title })}
                 </div>
               ) : (
                 items.map((item) => (
@@ -513,7 +544,7 @@ function MemoryView({ memoryItems }: { memoryItems: MemoryItem[] }) {
                       <p className="text-sm font-semibold text-[var(--text-primary)]">
                         {item.key}
                       </p>
-                      <Badge>{item.memoryType.replace("_", " ")}</Badge>
+                      <Badge>{t(`enums.memoryTypes.${item.memoryType}`)}</Badge>
                     </div>
                     <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                       {item.value}
@@ -544,18 +575,20 @@ function TasksView({
   onRefreshTasks: () => void | Promise<void>;
   onSelectTask: (taskId: string) => void | Promise<void>;
 }) {
+  const { formatDateTime, formatNumber, t } = useI18n();
+
   return (
     <div className="mx-auto grid max-w-6xl gap-4 xl:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)]">
       <Card className="p-6">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Task History
+              {t("tasks.title")}
             </h3>
             <p className="mt-2 text-sm text-[var(--text-secondary)]">
               {tasks.length === 0
-                ? "No agent task has been executed yet."
-                : `${tasks.length} persisted runs available.`}
+                ? t("tasks.noTasks")
+                : t("agents.persistedRuns", { count: formatNumber(tasks.length) })}
             </p>
           </div>
           <button
@@ -567,14 +600,14 @@ function TasksView({
             className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCw className={cn("size-3.5", isLoadingTaskDetail && "animate-spin")} />
-            Refresh
+            {t("common.refresh")}
           </button>
         </div>
 
         <div className="mt-4 space-y-3">
           {tasks.length === 0 ? (
             <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-              Run an objective in the Agents tab to populate task history.
+              {t("agents.populateHistory")}
             </div>
           ) : (
             tasks.map((task) => (
@@ -600,10 +633,10 @@ function TasksView({
                       {task.objective}
                     </p>
                   </div>
-                  <Badge className={statusBadgeClass(task.status)}>{task.status}</Badge>
+                  <Badge className={statusBadgeClass(task.status)}>{statusLabel(task.status, t)}</Badge>
                 </div>
                 <p className="mt-3 text-xs uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
-                  Updated {formatTimestamp(task.updatedAt)}
+                  {formatTimestamp(task.updatedAt, t("common.pending"), formatDateTime)}
                 </p>
               </button>
             ))
@@ -615,13 +648,13 @@ function TasksView({
         <div className="flex items-center gap-2">
           <Wrench className="size-4 text-[var(--brand-blue)]" />
           <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-            Task Detail
+            {t("tasks.detailTitle")}
           </h3>
         </div>
 
         {!selectedTaskDetail ? (
           <div className="mt-4 rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-            Select a task to inspect steps, reasoning, and tool executions.
+            {t("tasks.selectTask")}
           </div>
         ) : (
           <div className="mt-4 space-y-4">
@@ -636,14 +669,14 @@ function TasksView({
                   </p>
                 </div>
                 <Badge className={statusBadgeClass(selectedTaskDetail.task.status)}>
-                  {selectedTaskDetail.task.status}
+                  {statusLabel(selectedTaskDetail.task.status, t)}
                 </Badge>
               </div>
 
               {selectedTaskDetail.task.result ? (
                 <div className="mt-4 rounded-[20px] border border-[#1a78cf]/12 bg-white/75 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                    Final Summary
+                    {t("tasks.overview")}
                   </p>
                   <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
                     {selectedTaskDetail.task.result}
@@ -660,7 +693,7 @@ function TasksView({
 
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                Steps
+                {t("tasks.steps")}
               </p>
               {selectedTaskDetail.task.metadata.steps.map((step) => (
                 <div
@@ -676,7 +709,7 @@ function TasksView({
                         {step.rationale}
                       </p>
                     </div>
-                    <Badge className={statusBadgeClass(step.status)}>{step.status}</Badge>
+                    <Badge className={statusBadgeClass(step.status)}>{statusLabel(step.status, t)}</Badge>
                   </div>
 
                   {step.note ? (
@@ -688,7 +721,7 @@ function TasksView({
                   {step.toolName ? (
                     <div className="mt-3 rounded-[18px] border border-black/6 bg-white/82 p-3">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                        Tool
+                        {t("tasks.tool")}
                       </p>
                       <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
                         {step.toolName}
@@ -706,7 +739,10 @@ function TasksView({
                   ) : null}
 
                   <p className="mt-3 text-xs uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
-                    {formatTimestamp(step.startedAt)} to {formatTimestamp(step.finishedAt)}
+                    {t("tasks.fromTo", {
+                      from: formatTimestamp(step.startedAt, t("common.pending"), formatDateTime),
+                      to: formatTimestamp(step.finishedAt, t("common.pending"), formatDateTime)
+                    })}
                   </p>
                 </div>
               ))}
@@ -714,11 +750,11 @@ function TasksView({
 
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                Reasoning Log
+                {t("tasks.reasoningLog")}
               </p>
               {selectedTaskDetail.task.metadata.reasoningLog.length === 0 ? (
                 <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-                  No reasoning log recorded for this run.
+                  {t("tasks.noReasoning")}
                 </div>
               ) : (
                 selectedTaskDetail.task.metadata.reasoningLog.map((entry, index) => (
@@ -734,11 +770,11 @@ function TasksView({
 
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                Tool Executions
+                {t("tasks.toolExecutions")}
               </p>
               {selectedTaskDetail.toolExecutions.length === 0 ? (
                 <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-                  No persisted tool executions were attached to this task.
+                  {t("tasks.noToolExecutions")}
                 </div>
               ) : (
                 selectedTaskDetail.toolExecutions.map((execution) => (
@@ -752,18 +788,18 @@ function TasksView({
                           {execution.toolName}
                         </p>
                         <p className="mt-2 text-xs uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
-                          {formatTimestamp(execution.createdAt)}
+                          {formatTimestamp(execution.createdAt, t("common.pending"), formatDateTime)}
                         </p>
                       </div>
                       <Badge className={statusBadgeClass(execution.status)}>
-                        {execution.status}
+                        {statusLabel(execution.status, t)}
                       </Badge>
                     </div>
 
                     <div className="mt-4 grid gap-3">
                       <div className="rounded-[18px] border border-black/6 bg-white/82 p-3">
                         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                          Input
+                          {t("tasks.input")}
                         </p>
                         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--text-secondary)]">
                           {serializeValue(execution.inputPayload)}
@@ -771,7 +807,7 @@ function TasksView({
                       </div>
                       <div className="rounded-[18px] border border-black/6 bg-white/82 p-3">
                         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                          Output
+                          {t("tasks.output")}
                         </p>
                         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-[var(--text-secondary)]">
                           {serializeValue(execution.outputPayload)}
@@ -818,6 +854,7 @@ function SecurityView({
   conversationTitle: string;
   onOpenWorkspacePanel: (section?: WorkspacePanelSection) => void;
 }) {
+  const { formatNumber, t } = useI18n();
   const compactModel = selectedModel.replace(/:latest$/i, "");
 
   return (
@@ -827,40 +864,41 @@ function SecurityView({
           <div className="flex items-center gap-2">
             <Shield className="size-4 text-[var(--brand-blue)]" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Workspace Governance
+              {t("security.governance")}
             </h3>
           </div>
           <h2 className="mt-4 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            Keep access, runtime, and task operations scoped to the active workspace.
+            {t("security.headline")}
           </h2>
           <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">
-            Workspace management now lives in a dedicated settings panel so chat and task surfaces
-            stay uncluttered.
+            {t("security.description")}
           </p>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
             <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Role
+                {t("security.role")}
               </p>
               <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
-                {currentWorkspace?.role ?? "viewer"}
+                {t(`enums.workspaceRoles.${currentWorkspace?.role ?? "viewer"}`)}
               </p>
             </div>
             <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Invitations
+                {t("security.invitations")}
               </p>
               <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
-                {pendingInvitationCount} pending
+                {t("security.invitationsPending", {
+                  count: formatNumber(pendingInvitationCount)
+                })}
               </p>
             </div>
             <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Status
+                {t("security.status")}
               </p>
               <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
-                {pending ? "Responding" : "Ready"}
+                {pending ? t("common.status.responding") : t("common.status.ready")}
               </p>
             </div>
           </div>
@@ -870,19 +908,21 @@ function SecurityView({
           <div className="flex items-center gap-2">
             <FolderKanban className="size-4 text-[var(--brand-blue)]" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Current Workspace
+              {t("security.currentWorkspace")}
             </h3>
           </div>
           <div className="mt-4 rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-base font-semibold text-[var(--text-primary)]">
-              {currentWorkspace?.name ?? "No workspace selected"}
+              {currentWorkspace?.name ?? t("sidebar.noWorkspaceSelected")}
             </p>
             <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-              {currentWorkspace?.organizationName ?? "No organization context"}
+              {currentWorkspace?.organizationName ?? t("sidebar.noOrganizationContext")}
             </p>
             <p className="mt-3 text-xs uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
-              Active conversation: {conversationTitle || "New Chat"} / {conversationCount} total
-              threads
+              {t("security.activeConversation", {
+                title: conversationTitle || t("workspace.conversationTitleFallback"),
+                count: formatNumber(conversationCount)
+              })}
             </p>
           </div>
         </Card>
@@ -893,13 +933,13 @@ function SecurityView({
           <div className="flex items-center gap-2">
             <Settings2 className="size-4 text-[var(--brand-blue)]" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Runtime and Access
+              {t("security.runtimeAccess")}
             </h3>
           </div>
           <div className="mt-4 space-y-3">
             <div className="rounded-[20px] border border-black/6 bg-[var(--surface-soft)] p-4">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-                Current Model
+                {t("security.currentModel")}
               </p>
               <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
                 {selectedProvider} / {compactModel}
@@ -911,7 +951,7 @@ function SecurityView({
               className="inline-flex w-full items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
             >
               <Settings2 className="size-4" />
-              Open Workspace Settings
+              {t("security.openWorkspaceSettings")}
             </button>
             <button
               type="button"
@@ -919,14 +959,14 @@ function SecurityView({
               className="inline-flex w-full items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
             >
               <Sparkles className="size-4" />
-              Open Profile Panel
+              {t("security.openProfilePanel")}
             </button>
             <Link
               href="/admin"
               className="inline-flex w-full items-center justify-center gap-2 rounded-[18px] bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.22)] transition hover:brightness-105"
             >
               <Shield className="size-4" />
-              Open Admin Console
+              {t("security.openAdminConsole")}
             </Link>
           </div>
         </Card>
@@ -935,7 +975,7 @@ function SecurityView({
           <div className="flex items-center gap-2">
             <BrainCircuit className="size-4 text-[var(--brand-blue)]" />
             <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              Account Context
+              {t("security.accountContext")}
             </h3>
           </div>
           <div className="mt-4 rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
@@ -983,13 +1023,14 @@ export function ChatShell({
   onSelectTask,
   onSend
 }: ChatShellProps) {
+  const { t } = useI18n();
   const compactModel = selectedModel.replace(/:latest$/i, "");
   const modelLabel =
     selectedProvider && selectedModel
       ? `${selectedProvider} / ${compactModel}`
-      : selectedProvider || selectedModel || "Model unassigned";
-  const workspaceName = currentWorkspace?.name ?? "Workspace";
-  const workspaceStatus = pending ? "Responding" : "Ready";
+      : selectedProvider || selectedModel || t("chat.modelUnassigned");
+  const workspaceName = currentWorkspace?.name ?? t("common.workspace");
+  const workspaceStatus = pending ? t("common.status.responding") : t("common.status.ready");
 
   return (
     <section className="grid min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] rounded-[30px] border border-white/70 bg-[rgba(255,255,255,0.84)] shadow-[0_32px_90px_rgba(15,23,42,0.10)] backdrop-blur-xl">
@@ -997,13 +1038,13 @@ export function ChatShell({
         <div className="mx-auto flex max-w-6xl flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-tertiary)]">
-              Workspace
+              {t("workspace.workspaceLabel")}
             </p>
             <h1 className="mt-2 truncate text-[1.8rem] font-semibold tracking-[-0.04em] text-[var(--text-primary)] sm:text-[2rem]">
               {workspaceName}
             </h1>
             <p className="mt-2 truncate text-sm text-[var(--text-secondary)]">
-              {currentWorkspace?.organizationName ?? "Personal workspace"}
+              {currentWorkspace?.organizationName ?? t("chat.personalWorkspace")}
             </p>
           </div>
 
@@ -1017,13 +1058,14 @@ export function ChatShell({
             >
               {modelLabel}
             </div>
+            <LanguageSwitcher className="border-black/10 bg-white text-[var(--text-primary)] shadow-none [&_span]:text-[var(--text-secondary)]" compact />
             <button
               type="button"
               onClick={() => onOpenWorkspacePanel("workspace")}
               className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
             >
               <Settings2 className="size-4" />
-              Workspace
+              {t("common.workspace")}
             </button>
           </div>
         </div>
@@ -1058,6 +1100,8 @@ export function ChatShell({
         </div>
       ) : (
         <div className="min-h-0 overflow-y-auto px-3 py-4 sm:px-5 lg:px-6">
+          {activeView === "endpoints" ? <NetworkMonitorConsole /> : null}
+
           {activeView === "documents" ? (
             <DocumentsView
               selectedProvider={selectedProvider}

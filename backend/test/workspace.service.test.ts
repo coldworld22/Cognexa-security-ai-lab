@@ -67,6 +67,9 @@ test("WorkspaceService provisions a personal workspace for users without members
     } as never,
     {
       listPendingForEmail: async () => []
+    } as never,
+    {
+      ensureWorkspaceDefaults: async () => undefined
     } as never
   );
 
@@ -177,6 +180,9 @@ test("WorkspaceService accepts invitations and switches the active workspace", a
         };
       },
       listPendingForEmail: async () => []
+    } as never,
+    {
+      ensureWorkspaceDefaults: async () => undefined
     } as never
   );
 

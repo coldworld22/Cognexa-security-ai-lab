@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { AppIdentity } from "@/components/ui/app-identity";
+import { useI18n } from "@/lib/i18n";
 import { ConversationSummary, WorkspaceSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -28,16 +29,6 @@ interface SidebarProps {
   deletingConversationId?: string | null;
 }
 
-function formatUpdatedAt(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleDateString([], {
-        month: "short",
-        day: "numeric"
-      });
-}
-
 export function Sidebar({
   className,
   userName,
@@ -53,6 +44,8 @@ export function Sidebar({
   onDeleteConversation,
   deletingConversationId = null
 }: SidebarProps) {
+  const { formatDate, t } = useI18n();
+
   return (
     <aside
       className={cn(
@@ -67,13 +60,13 @@ export function Sidebar({
         <AppIdentity tone="dark" showSubtitle={false} showTagline={false} />
         <div className="mt-4 rounded-[20px] border border-white/10 bg-white/5 px-3 py-3">
           <p className="text-[11px] uppercase tracking-[0.22em] text-white/42">
-            Workspace
+            {t("sidebar.workspaceTitle")}
           </p>
           <p className="mt-2 truncate text-sm font-semibold text-white">
-            {currentWorkspace?.name ?? "No workspace selected"}
+            {currentWorkspace?.name ?? t("sidebar.noWorkspaceSelected")}
           </p>
           <p className="mt-1 truncate text-xs text-white/42">
-            {currentWorkspace?.organizationName ?? "No organization context"}
+            {currentWorkspace?.organizationName ?? t("sidebar.noOrganizationContext")}
           </p>
         </div>
       </Link>
@@ -84,13 +77,13 @@ export function Sidebar({
         className="mt-4 inline-flex items-center justify-center gap-2 rounded-2xl bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.28)] transition hover:brightness-105"
       >
         <MessageSquarePlus className="size-4" />
-        New Chat
+        {t("sidebar.newChat")}
       </button>
 
       <div className="mt-6 flex min-h-0 flex-1 flex-col">
         <div className="flex items-center justify-between px-1">
           <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-white/38">
-            Conversations
+            {t("sidebar.conversations")}
           </p>
           <p className="text-xs text-white/38">{conversations.length}</p>
         </div>
@@ -98,8 +91,7 @@ export function Sidebar({
         <div className="mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
           {conversations.length === 0 ? (
             <div className="rounded-[22px] border border-dashed border-white/10 bg-white/5 p-4 text-sm text-white/48">
-              Start a new chat to turn this workspace into an engineering thread with memory,
-              tools, and task history.
+              {t("sidebar.emptyConversations")}
             </div>
           ) : (
             conversations.map((conversation) => {
@@ -125,7 +117,13 @@ export function Sidebar({
                       {conversation.title}
                     </p>
                     <p className="mt-1 truncate text-xs text-white/42">
-                      {conversation.modelProvider} / {formatUpdatedAt(conversation.updatedAt)}
+                      {t("sidebar.updatedAt", {
+                        provider: conversation.modelProvider,
+                        date: formatDate(conversation.updatedAt, {
+                          month: "short",
+                          day: "numeric"
+                        })
+                      })}
                     </p>
                   </button>
                   <button
@@ -135,7 +133,9 @@ export function Sidebar({
                     }}
                     disabled={isDeleting}
                     className="mt-1 rounded-xl p-2 text-white/34 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label={`Delete ${conversation.title}`}
+                    aria-label={t("sidebar.deleteConversation", {
+                      title: conversation.title
+                    })}
                   >
                     <Trash2 className="size-4" />
                   </button>
@@ -154,7 +154,7 @@ export function Sidebar({
         >
           <span className="inline-flex items-center gap-2">
             <Settings2 className="size-4" />
-            Workspace
+            {t("common.workspace")}
           </span>
           {pendingInvitationsCount > 0 ? (
             <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-white/70">
@@ -167,7 +167,7 @@ export function Sidebar({
           className="inline-flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-white transition hover:bg-white/10"
         >
           <Shield className="size-4" />
-          Admin
+          {t("common.admin")}
         </Link>
         <button
           type="button"
@@ -176,7 +176,7 @@ export function Sidebar({
         >
           <span className="inline-flex items-center gap-2">
             <UserCircle2 className="size-4" />
-            Profile
+            {t("common.profile")}
           </span>
           <PanelsTopLeft className="size-4 text-white/45" />
         </button>

@@ -14,6 +14,7 @@ import { resolveBackendPath } from "../../utils/paths";
 import { AppError } from "../../utils/app-error";
 import { AuthorizationService } from "../authorization/authorization.service";
 import { RetrievalContextService } from "./retrieval-context.service";
+import { PolicyService } from "../policy/policy.service";
 
 interface UploadDocumentInput {
   originalName: string;
@@ -30,7 +31,8 @@ export class RagService {
     private readonly parser: DocumentParserService,
     private readonly chunker: TextChunker,
     private readonly authorization: AuthorizationService,
-    private readonly retrievalContext: RetrievalContextService
+    private readonly retrievalContext: RetrievalContextService,
+    private readonly policy: PolicyService
   ) {}
 
   async ingestDocument(input: UploadDocumentInput & { actor: AccessContext }) {
@@ -39,6 +41,17 @@ export class RagService {
       resource: "rag.documents",
       action: "upload_document",
       reason: "Document ingestion requires 'rag' permission"
+    });
+    await this.policy.evaluatePolicy({
+      actor: input.actor,
+      action: "rag.upload_document",
+      categories: ["file_uploads", "document_access"],
+      fileName: input.originalName,
+      mimeType: input.mimeType,
+      fileSizeBytes: input.sizeBytes,
+      metadata: {
+        upload: true
+      }
     });
 
     const storedFileName = `${randomUUID()}-${this.sanitizeFileName(input.originalName)}`;
@@ -99,6 +112,15 @@ export class RagService {
       resource: "rag.retrieve",
       action: "retrieve_context",
       reason: "Retrieval requires 'rag' permission"
+    });
+    await this.policy.evaluatePolicy({
+      actor,
+      action: "rag.retrieve_context",
+      categories: ["document_access"],
+      content: query,
+      metadata: {
+        limit
+      }
     });
 
     return this.retrievalContext.retrieveChunkMatches({

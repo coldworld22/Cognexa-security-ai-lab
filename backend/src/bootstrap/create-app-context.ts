@@ -12,9 +12,17 @@ import { AgentRepository } from "../database/repositories/agent.repository";
 import { TaskRepository } from "../database/repositories/task.repository";
 import { ToolExecutionRepository } from "../database/repositories/tool-execution.repository";
 import { OrganizationRepository } from "../database/repositories/organization.repository";
+import { PolicyAuditLogRepository } from "../database/repositories/policy-audit-log.repository";
+import { PolicyRepository } from "../database/repositories/policy.repository";
+import { MonitoredEndpointRepository } from "../database/repositories/monitored-endpoint.repository";
+import { ManagedEndpointRepository } from "../database/repositories/managed-endpoint.repository";
+import { NetworkDiscoveryHostRepository } from "../database/repositories/network-discovery-host.repository";
 import { WorkspaceRepository } from "../database/repositories/workspace.repository";
 import { WorkspaceMemberRepository } from "../database/repositories/workspace-member.repository";
 import { WorkspaceInvitationRepository } from "../database/repositories/workspace-invitation.repository";
+import { AuthorizedDomainVerificationRepository } from "../database/repositories/authorized-domain-verification.repository";
+import { AuthorizedSecurityTestRunRepository } from "../database/repositories/authorized-security-test-run.repository";
+import { AuthorizedSecurityTestEventRepository } from "../database/repositories/authorized-security-test-event.repository";
 import { PgVectorStore } from "../rag/vector-stores/pgvector.store";
 import { QdrantVectorStore } from "../rag/vector-stores/qdrant.store";
 import { ProviderFactory } from "../llm/provider-factory";
@@ -42,6 +50,19 @@ import { AppContext } from "./app-context";
 import { initializeRuntime } from "./initialize-runtime";
 import { RetrievalContextService } from "../services/rag/retrieval-context.service";
 import { WorkspaceService } from "../services/workspace/workspace.service";
+import { PolicyService } from "../services/policy/policy.service";
+import { EndpointMonitorService } from "../services/endpoints/endpoint-monitor.service";
+import { PenetrationTestOrchestratorFactory } from "../services/penetration-testing/penetration-test-orchestrator.service";
+import { FortiGateClientService } from "../services/integrations/fortigate-client.service";
+import { WebsiteScannerService } from "../services/website-scanner/website-scanner.service";
+import { SecurityReviewService } from "../services/security-review/security-review.service";
+import { AuthorizedSecurityTestingService } from "../services/authorized-testing/authorized-security-testing.service";
+import { VerificationBypassService } from "../services/authorized-testing/verification-bypass.service";
+import {
+  HeadlessBrowserCrawler,
+  resolveBrowserExecutablePath
+} from "../services/website-scanner/headless-browser-crawler";
+import { getDevModeConfig } from "../config/dev-mode.config";
 
 export async function createAppContext(): Promise<AppContext> {
   const logger = createLogger();
@@ -68,10 +89,18 @@ export async function createAppContext(): Promise<AppContext> {
     agents: new AgentRepository(postgres),
     tasks: new TaskRepository(postgres),
     toolExecutions: new ToolExecutionRepository(postgres),
+    policies: new PolicyRepository(postgres),
+    policyAuditLogs: new PolicyAuditLogRepository(postgres),
+    monitoredEndpoints: new MonitoredEndpointRepository(postgres),
+    managedEndpoints: new ManagedEndpointRepository(postgres),
+    networkDiscoveryHosts: new NetworkDiscoveryHostRepository(postgres),
     organizations: new OrganizationRepository(postgres),
     workspaces: new WorkspaceRepository(postgres),
     workspaceMembers: new WorkspaceMemberRepository(postgres),
-    workspaceInvitations: new WorkspaceInvitationRepository(postgres)
+    workspaceInvitations: new WorkspaceInvitationRepository(postgres),
+    authorizedDomainVerifications: new AuthorizedDomainVerificationRepository(postgres),
+    authorizedSecurityTestRuns: new AuthorizedSecurityTestRunRepository(postgres),
+    authorizedSecurityTestEvents: new AuthorizedSecurityTestEventRepository(postgres)
   };
 
   const toolRegistry = new ToolRegistry(logger);
@@ -87,12 +116,17 @@ export async function createAppContext(): Promise<AppContext> {
     defaultModel: env.DEFAULT_LLM_MODEL
   });
 
+  const policy = new PolicyService(
+    repositories.policies,
+    repositories.policyAuditLogs
+  );
   const workspace = new WorkspaceService(
     repositories.users,
     repositories.organizations,
     repositories.workspaces,
     repositories.workspaceMembers,
-    repositories.workspaceInvitations
+    repositories.workspaceInvitations,
+    policy
   );
   const authorization = new AuthorizationService(
     repositories.users,
@@ -107,9 +141,10 @@ export async function createAppContext(): Promise<AppContext> {
   const tools = new ToolExecutionService(
     toolRegistry,
     repositories.toolExecutions,
-    authorization
+    authorization,
+    policy
   );
-  const llm = new LLMService(providerFactory, tools);
+  const llm = new LLMService(providerFactory, tools, policy);
   const memory = new MemoryService(
     repositories.memories,
     repositories.messages,
@@ -148,7 +183,8 @@ export async function createAppContext(): Promise<AppContext> {
     new DocumentParserService(),
     new TextChunker(),
     authorization,
-    retrievalContext
+    retrievalContext,
+    policy
   );
   const auth = new AuthService(repositories.users, redis, workspace);
   await auth.initialize();
@@ -160,6 +196,7 @@ export async function createAppContext(): Promise<AppContext> {
     new TaskPlanner(),
     new AgentExecutor(llm, tools, retrievalContext),
     authorization,
+    policy,
     logger
   );
   await agent.initialize();
@@ -169,6 +206,67 @@ export async function createAppContext(): Promise<AppContext> {
     providerFactory,
     env.LOCAL_MODEL_BASE_URL
   );
+  const fortiGate = new FortiGateClientService({
+    baseUrl: env.FORTIGATE_BASE_URL,
+    apiToken: env.FORTIGATE_API_TOKEN,
+    vdom: env.FORTIGATE_VDOM,
+    allowSelfSigned: env.FORTIGATE_ALLOW_SELF_SIGNED
+  });
+  const endpoints = new EndpointMonitorService(
+    repositories.monitoredEndpoints,
+    authorization,
+    repositories.managedEndpoints,
+    env.ENDPOINT_ENROLLMENT_TOKEN,
+    repositories.networkDiscoveryHosts,
+    fortiGate
+  );
+  const browserExecutablePath = resolveBrowserExecutablePath(
+    env.WEBSITE_SCANNER_BROWSER_PATH
+  );
+  const devModeConfig = getDevModeConfig();
+  const verificationBypass = new VerificationBypassService(devModeConfig);
+  const authorizedTestingDevelopmentLocalTargetsEnabled =
+    env.NODE_ENV === "development" && env.AUTHORIZED_TESTING_DEV_MODE;
+  const websiteScanner = new WebsiteScannerService(authorization, policy, {
+    allowDevelopmentLocalTargets: authorizedTestingDevelopmentLocalTargetsEnabled,
+    browserCrawler: browserExecutablePath
+      ? new HeadlessBrowserCrawler({
+          executablePath: browserExecutablePath,
+          allowDevelopmentLocalTargets:
+            authorizedTestingDevelopmentLocalTargetsEnabled
+        })
+      : undefined
+  });
+  const securityReview = new SecurityReviewService(authorization, websiteScanner, llm, {
+    defaultProvider: env.DEFAULT_LLM_PROVIDER,
+    defaultModel: env.DEFAULT_LLM_MODEL
+  });
+  const authorizedTesting = new AuthorizedSecurityTestingService(
+    authorization,
+    policy,
+    websiteScanner,
+    llm,
+    repositories.authorizedDomainVerifications,
+    repositories.authorizedSecurityTestRuns,
+    repositories.authorizedSecurityTestEvents,
+    {
+      defaultProvider: env.DEFAULT_LLM_PROVIDER,
+      defaultModel: env.DEFAULT_LLM_MODEL,
+      allowDevelopmentLocalTargets:
+        authorizedTestingDevelopmentLocalTargetsEnabled,
+      verificationBypass
+    }
+  );
+  const penetrationTesting = new PenetrationTestOrchestratorFactory({
+    agents: repositories.agents,
+    tasks: repositories.tasks,
+    llm,
+    passiveScanner: securityReview,
+    activeTester: authorizedTesting,
+    logger,
+    defaultProvider: env.DEFAULT_LLM_PROVIDER,
+    defaultModel: env.DEFAULT_LLM_MODEL
+  });
   const admin = new AdminService(
     repositories.users,
     repositories.conversations,
@@ -177,7 +275,11 @@ export async function createAppContext(): Promise<AppContext> {
     repositories.toolExecutions,
     repositories.tasks,
     health,
-    authorization
+    authorization,
+    endpoints,
+    websiteScanner,
+    securityReview,
+    authorizedTesting
   );
 
   return {
@@ -188,13 +290,17 @@ export async function createAppContext(): Promise<AppContext> {
     vectorStores,
     services: {
       auth,
+      authorizedTesting,
       authorization,
       chat,
       memory,
       rag,
       agent,
+      endpoints,
       llm,
       admin,
+      policy,
+      penetrationTesting,
       tools,
       health,
       workspace

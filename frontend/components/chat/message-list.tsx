@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { AppIdentity } from "@/components/ui/app-identity";
+import { useI18n } from "@/lib/i18n";
 import { ChatMessage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -12,36 +13,26 @@ interface MessageListProps {
   messages: ChatMessage[];
 }
 
-const starterCards = [
-  {
-    eyebrow: "Security Review",
-    title: "Audit authentication and session boundaries",
-    body: "Trace login, refresh flow, workspace headers, and protected routes from frontend to backend."
-  },
-  {
-    eyebrow: "Documents",
-    title: "Inspect retrieval and ingestion paths",
-    body: "Map document parsing, vector storage, and retrieval behavior across the stack."
-  },
-  {
-    eyebrow: "Agent Ops",
-    title: "Launch a workspace task",
-    body: "Use the workspace tabs to run tools, inspect memory, and review persisted task traces."
-  }
-];
-
-function formatMessageTime(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit"
-      });
-}
-
 export function MessageList({ messages }: MessageListProps) {
+  const { formatTime, t } = useI18n();
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const starterCards = [
+    {
+      eyebrow: t("chat.starterCards.security.eyebrow"),
+      title: t("chat.starterCards.security.title"),
+      body: t("chat.starterCards.security.body")
+    },
+    {
+      eyebrow: t("chat.starterCards.documents.eyebrow"),
+      title: t("chat.starterCards.documents.title"),
+      body: t("chat.starterCards.documents.body")
+    },
+    {
+      eyebrow: t("chat.starterCards.agents.eyebrow"),
+      title: t("chat.starterCards.agents.title"),
+      body: t("chat.starterCards.agents.body")
+    }
+  ];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
@@ -57,24 +48,23 @@ export function MessageList({ messages }: MessageListProps) {
           <AppIdentity size="md" showTagline={false} />
           <div className="mt-8 flex flex-wrap gap-2">
             <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-              Chat
+              {t("common.chat")}
             </span>
             <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-              Memory
+              {t("common.memory")}
             </span>
             <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-              Agents
+              {t("common.agents")}
             </span>
             <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
-              Security
+              {t("common.security")}
             </span>
           </div>
           <h2 className="mt-6 text-3xl font-semibold tracking-[-0.04em] text-[var(--text-primary)] sm:text-4xl">
-            Start with a concrete engineering task.
+            {t("chat.startTaskTitle")}
           </h2>
           <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--text-secondary)]">
-            Ask about the codebase, uploaded files, memory context, or use the workspace tabs to
-            inspect agents, tasks, and security operations.
+            {t("chat.startTaskDescription")}
           </p>
 
           <div className="mt-8 grid gap-3 md:grid-cols-3">
@@ -125,9 +115,9 @@ export function MessageList({ messages }: MessageListProps) {
             >
               <div className="mb-2 flex items-center gap-2 px-1 text-[11px] uppercase tracking-[0.18em] text-black/38">
                 <span>
-                  {isAssistant ? "Assistant" : isUser ? "You" : message.role}
+                  {isAssistant ? t("chat.assistant") : isUser ? t("chat.you") : message.role}
                 </span>
-                <span>{formatMessageTime(message.createdAt)}</span>
+                <span>{formatTime(message.createdAt)}</span>
               </div>
               <div
                 className={cn(
@@ -141,7 +131,7 @@ export function MessageList({ messages }: MessageListProps) {
               >
                 <div className="prose prose-sm max-w-none break-words prose-headings:text-[#111827] prose-p:text-current prose-strong:text-[#111827] prose-code:text-[#b45309] prose-pre:whitespace-pre-wrap prose-pre:break-words prose-pre:bg-[#111827] prose-pre:text-white">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {message.content || (isAssistant ? "Thinking..." : "")}
+                    {message.content || (isAssistant ? t("chat.thinking") : "")}
                   </ReactMarkdown>
                 </div>
               </div>

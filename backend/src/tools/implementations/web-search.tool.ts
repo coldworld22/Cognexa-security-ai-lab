@@ -8,38 +8,71 @@ interface WebSearchInput {
   query?: string;
   url?: string;
   maxContentChars?: number;
+  maxResults?: number;
+}
+
+interface WebSearchToolDependencies {
+  fetchImpl?: typeof fetch;
+  lookupHost?: typeof lookup;
+}
+
+interface WebSearchResult {
+  url: string;
+  finalUrl: string;
+  title: string;
+  description: string;
+  excerpt: string;
+  content: string;
+  headings: string[];
+  statusCode: number;
 }
 
 export class WebSearchTool extends BaseTool<
   WebSearchInput,
   {
     provider: string;
-    results: Array<{
-      url: string;
-      finalUrl: string;
-      title: string;
-      description: string;
-      excerpt: string;
-      content: string;
-      headings: string[];
-      statusCode: number;
-    }>;
+    results: WebSearchResult[];
   }
 > {
   readonly metadata = {
     name: "web-search",
     description:
-      "Fetch and summarize public webpages by URL with SSRF-safe guardrails.",
+      "Search the public web by query or fetch and summarize public webpages by URL with SSRF-safe guardrails.",
     category: "web" as const,
     inputSchema: {
       query: "string?",
       url: "string?",
-      maxContentChars: "number?"
+      maxContentChars: "number?",
+      maxResults: "number?"
     }
   };
 
+  private readonly fetchImpl: typeof fetch;
+  private readonly lookupHost: typeof lookup;
+
+  constructor(dependencies: WebSearchToolDependencies = {}) {
+    super();
+    this.fetchImpl = dependencies.fetchImpl ?? fetch;
+    this.lookupHost = dependencies.lookupHost ?? lookup;
+  }
+
   async execute(input: WebSearchInput) {
     const targetUrl = this.resolveTargetUrl(input);
+    if (!targetUrl) {
+      const query = input.query?.trim();
+      if (!query) {
+        throw new AppError(
+          "web-search requires either a full public URL or a non-empty query.",
+          400
+        );
+      }
+
+      return {
+        provider: "bing-search",
+        results: await this.searchPublicWeb(query, input.maxResults ?? 5)
+      };
+    }
+
     const safeUrl = await this.assertSafePublicUrl(targetUrl);
     const summary = await this.fetchWebsiteSummary(
       safeUrl,
@@ -52,16 +85,13 @@ export class WebSearchTool extends BaseTool<
     };
   }
 
-  private resolveTargetUrl(input: WebSearchInput): URL {
+  private resolveTargetUrl(input: WebSearchInput): URL | null {
     const raw =
       input.url?.trim() ??
       this.extractUrl(input.query ?? "");
 
     if (!raw) {
-      throw new AppError(
-        "web-search currently supports direct public URLs. Provide a full http or https link.",
-        400
-      );
+      return null;
     }
 
     try {
@@ -95,7 +125,10 @@ export class WebSearchTool extends BaseTool<
       });
     }
 
-    const records = await lookup(url.hostname, { all: true, verbatim: true }).catch(() => []);
+    const records = await this.lookupHost(url.hostname, {
+      all: true,
+      verbatim: true
+    }).catch(() => []);
     if (records.length === 0) {
       throw new AppError("Unable to resolve website hostname.", 400, {
         hostname: url.hostname
@@ -172,7 +205,7 @@ export class WebSearchTool extends BaseTool<
     const timeout = setTimeout(() => controller.abort(), 10000);
 
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         method: "GET",
         redirect: "follow",
         signal: controller.signal,
@@ -228,6 +261,150 @@ export class WebSearchTool extends BaseTool<
     }
   }
 
+  private async searchPublicWeb(query: string, maxResults: number) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const searchUrl = new URL("https://www.bing.com/search");
+      searchUrl.searchParams.set("q", query);
+      searchUrl.searchParams.set("setlang", "en-US");
+      searchUrl.searchParams.set("cc", "us");
+      searchUrl.searchParams.set("adlt", "off");
+
+      const response = await this.fetchImpl(searchUrl, {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9"
+        }
+      });
+
+      if (!response.ok) {
+        throw new AppError(`Search request returned ${response.status}.`, 502, {
+          query,
+          statusCode: response.status,
+          provider: "bing-search"
+        });
+      }
+
+      const html = await response.text();
+      const results = this.parseSearchResults(html, Math.min(Math.max(maxResults, 1), 10));
+      if (results.length === 0) {
+        throw new AppError("No public search results were returned for the query.", 404, {
+          query,
+          provider: "bing-search"
+        });
+      }
+
+      return results;
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+
+      throw new AppError("Failed to search the public web.", 502, {
+        query,
+        provider: "bing-search",
+        reason: error instanceof Error ? error.message : "Unknown search failure"
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private parseSearchResults(html: string, maxResults: number): WebSearchResult[] {
+    const blocks = Array.from(html.matchAll(/<li class="b_algo"[\s\S]*?<\/li>/gi))
+      .map((match) => match[0])
+      .slice(0, maxResults);
+
+    return blocks
+      .map<WebSearchResult | null>((block) => {
+        const linkMatch = block.match(/<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+        if (!linkMatch?.[1] || !linkMatch[2]) {
+          return null;
+        }
+
+        const snippetMatch =
+          block.match(/<div class="b_caption"[\s\S]*?<p>([\s\S]*?)<\/p>/i) ??
+          block.match(/<p>([\s\S]*?)<\/p>/i);
+
+        const url = this.decodeBingResultUrl(linkMatch[1]);
+        const title = this.cleanHtmlText(linkMatch[2]);
+        const snippet = this.cleanHtmlText(snippetMatch?.[1] ?? "");
+
+        if (!url || !title) {
+          return null;
+        }
+
+        return {
+          url,
+          finalUrl: url,
+          title,
+          description: snippet,
+          excerpt: snippet,
+          content: snippet,
+          headings: [],
+          statusCode: 200
+        };
+      })
+      .filter((result): result is WebSearchResult => result !== null);
+  }
+
+  private decodeBingResultUrl(rawUrl: string): string {
+    try {
+      const decoded = this.decodeHtmlEntities(rawUrl);
+      const url = new URL(decoded, "https://www.bing.com");
+      const redirectTarget = url.searchParams.get("u");
+
+      if (redirectTarget) {
+        const decodedRedirectTarget = this.decodeBingRedirectTarget(redirectTarget);
+        if (decodedRedirectTarget) {
+          return decodedRedirectTarget;
+        }
+
+        try {
+          return decodeURIComponent(redirectTarget);
+        } catch {
+          return redirectTarget;
+        }
+      }
+
+      return url.toString();
+    } catch {
+      return this.decodeHtmlEntities(rawUrl);
+    }
+  }
+
+  private decodeBingRedirectTarget(value: string): string | null {
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const encodedValue =
+      normalized.startsWith("a1") && normalized.length > 2
+        ? normalized.slice(2)
+        : normalized;
+
+    const base64 = encodedValue.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+
+    try {
+      const decoded = Buffer.from(`${base64}${padding}`, "base64").toString("utf-8");
+      return decoded.startsWith("http://") || decoded.startsWith("https://")
+        ? decoded
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   private extractTitle(html: string): string {
     const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     return this.cleanHtmlText(match?.[1] ?? "Untitled page");
@@ -280,6 +457,7 @@ export class WebSearchTool extends BaseTool<
 
   private cleanHtmlText(value: string): string {
     return this.decodeHtmlEntities(value)
+      .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
   }

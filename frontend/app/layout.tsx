@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 
+import { I18nProvider } from "@/lib/i18n";
 import { APP_DESCRIPTION, APP_NAME } from "@/lib/branding";
 
 import "./globals.css";
@@ -29,9 +30,9 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className={`${headingFont.variable} ${monoFont.variable} bg-[#e8ece3] text-ink antialiased`}>
-        {children}
+        <I18nProvider>{children}</I18nProvider>
       </body>
     </html>
   );

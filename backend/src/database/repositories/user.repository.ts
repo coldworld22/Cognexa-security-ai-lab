@@ -89,12 +89,53 @@ export class UserRepository extends BaseRepository {
       `SELECT id, email, display_name, password_hash, role, preferences, created_at, updated_at, last_login_at
              , current_workspace_id
        FROM users
-       WHERE email = $1
+       WHERE LOWER(email) = LOWER($1)
        LIMIT 1`,
       [email]
     );
 
     if (result.rowCount === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: row.display_name,
+      passwordHash: row.password_hash,
+      role: row.role,
+      preferences: row.preferences ?? {},
+      currentWorkspaceId: row.current_workspace_id ?? undefined,
+      lastLoginAt: row.last_login_at ?? undefined,
+      createdAt: row.created_at.toISOString(),
+      updatedAt: row.updated_at.toISOString()
+    };
+  }
+
+  async findByLoginIdentifier(identifier: string): Promise<UserEntity | null> {
+    const normalizedIdentifier = identifier.trim();
+    if (!normalizedIdentifier) {
+      return null;
+    }
+
+    const exactEmailMatch = await this.findByEmail(normalizedIdentifier);
+    if (exactEmailMatch) {
+      return exactEmailMatch;
+    }
+
+    const result = await this.pool.query(
+      `SELECT id, email, display_name, password_hash, role, preferences, created_at, updated_at, last_login_at,
+              current_workspace_id
+       FROM users
+       WHERE POSITION('@' IN email) > 0
+         AND LOWER(SPLIT_PART(email, '@', 1)) = LOWER($1)
+       ORDER BY created_at ASC
+       LIMIT 2`,
+      [normalizedIdentifier]
+    );
+
+    if (result.rowCount !== 1) {
       return null;
     }
 
@@ -213,6 +254,38 @@ export class UserRepository extends BaseRepository {
        WHERE id = $1`,
       [id, workspaceId]
     );
+  }
+
+  async updatePreferences(
+    id: string,
+    preferences: Record<string, unknown>
+  ): Promise<UserEntity> {
+    const result = await this.pool.query(
+      `UPDATE users
+       SET preferences = $2::jsonb,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, email, display_name, password_hash, role, preferences, created_at, updated_at, last_login_at, current_workspace_id`,
+      [id, JSON.stringify(preferences)]
+    );
+
+    if (result.rowCount === 0) {
+      throw new Error(`User ${id} not found`);
+    }
+
+    const row = result.rows[0];
+    return {
+      id: row.id,
+      email: row.email,
+      displayName: row.display_name,
+      passwordHash: row.password_hash,
+      role: row.role,
+      preferences: row.preferences ?? {},
+      currentWorkspaceId: row.current_workspace_id ?? undefined,
+      lastLoginAt: row.last_login_at ?? undefined,
+      createdAt: row.created_at.toISOString(),
+      updatedAt: row.updated_at.toISOString()
+    };
   }
 
   async count(): Promise<number> {

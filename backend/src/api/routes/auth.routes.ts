@@ -5,7 +5,7 @@ import { AuthController } from "../controllers/auth.controller";
 import { asyncHandler } from "../../utils/async-handler";
 import { validateBody } from "../middlewares/validate.middleware";
 
-export function createAuthRoutes(controller: AuthController) {
+export function createPublicAuthRoutes(controller: AuthController) {
   const router = Router();
 
   router.post(
@@ -32,6 +32,27 @@ export function createAuthRoutes(controller: AuthController) {
       })
     ),
     asyncHandler(controller.refresh)
+  );
+
+  return router;
+}
+
+export function createAuthenticatedAuthRoutes(controller: AuthController) {
+  const router = Router();
+
+  router.get(
+    "/session",
+    asyncHandler(controller.session)
+  );
+
+  router.patch(
+    "/preferences",
+    validateBody(
+      z.object({
+        preferences: z.record(z.string(), z.unknown())
+      })
+    ),
+    asyncHandler(controller.updatePreferences)
   );
 
   return router;

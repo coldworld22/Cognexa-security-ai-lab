@@ -16,6 +16,9 @@ export class HealthService {
     let redisStatus: "up" | "degraded" = "up";
     const localModel = await this.probeLocalModel();
     const llmProviders = await this.providers.listProviders();
+    const hasInstalledModels = llmProviders.some(
+      (provider) => provider.models.length > 0
+    );
 
     try {
       const postgresResult = await this.postgres.query("SELECT 1");
@@ -31,10 +34,13 @@ export class HealthService {
       redisStatus = "degraded";
     }
 
+    const localModelStatus =
+      localModel.status === "up" && hasInstalledModels ? "up" : "degraded";
+
     const status =
       postgresStatus === "up" &&
       redisStatus === "up" &&
-      localModel.status === "up"
+      localModelStatus === "up"
         ? "ok"
         : "degraded";
 
@@ -45,7 +51,10 @@ export class HealthService {
         postgres: postgresStatus,
         redis: redisStatus,
         llmProviders,
-        localModel
+        localModel: {
+          ...localModel,
+          status: localModelStatus
+        }
       }
     };
   }

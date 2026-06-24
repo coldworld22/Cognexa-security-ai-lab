@@ -15,6 +15,7 @@ import {
   WorkspaceSession,
   WorkspaceSummary
 } from "../../workspaces/workspace.types";
+import { PolicyService } from "../policy/policy.service";
 
 interface CreateWorkspaceInput {
   name: string;
@@ -39,7 +40,8 @@ export class WorkspaceService {
     private readonly organizations: OrganizationRepository,
     private readonly workspaces: WorkspaceRepository,
     private readonly members: WorkspaceMemberRepository,
-    private readonly invitations: WorkspaceInvitationRepository
+    private readonly invitations: WorkspaceInvitationRepository,
+    private readonly policy: PolicyService
   ) {}
 
   async ensureProvisionedForUser(user: UserEntity): Promise<WorkspaceSummary> {
@@ -78,6 +80,7 @@ export class WorkspaceService {
       invitedByUserId: user.id
     });
     await this.users.updateCurrentWorkspace(user.id, workspace.id);
+    await this.policy.ensureWorkspaceDefaults(workspace.id, user.id);
 
     return {
       id: workspace.id,
@@ -210,6 +213,7 @@ export class WorkspaceService {
       invitedByUserId: actor.userId
     });
     await this.users.updateCurrentWorkspace(actor.userId, workspace.id);
+    await this.policy.ensureWorkspaceDefaults(workspace.id, actor.userId);
 
     return this.listSession(actor.userId);
   }

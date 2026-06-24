@@ -9,7 +9,7 @@ import {
 } from "react";
 import { SendHorizontal, SlidersHorizontal } from "lucide-react";
 
-import { APP_NAME } from "@/lib/branding";
+import { useI18n } from "@/lib/i18n";
 import { LlmProviderCatalog } from "@/lib/types";
 
 interface MessageComposerProps {
@@ -31,11 +31,21 @@ export function MessageComposer({
   onModelChange,
   onSend
 }: MessageComposerProps) {
+  const { t } = useI18n();
   const [message, setMessage] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const models =
-    providers.find((provider) => provider.id === selectedProvider)?.models ?? [];
-  const isModelReady = models.length > 0 && models.includes(selectedModel);
+  const selectedProviderCatalog = providers.find(
+    (provider) => provider.id === selectedProvider
+  );
+  const models = selectedProviderCatalog?.models ?? [];
+  const isProviderCatalogLoaded = providers.length > 0;
+  const isModelReady =
+    models.length > 0 &&
+    models.some(
+      (model) =>
+        model.replace(/:latest$/i, "").toLowerCase() ===
+        selectedModel.replace(/:latest$/i, "").toLowerCase()
+    );
   const isSubmitDisabled = disabled || !isModelReady;
 
   useEffect(() => {
@@ -81,7 +91,7 @@ export function MessageComposer({
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div className="inline-flex items-center gap-2 rounded-full border border-black/5 bg-white/70 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/45">
             <SlidersHorizontal className="size-3.5" />
-            Runtime
+            {t("composer.runtime")}
           </div>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[28rem] lg:flex-1 lg:max-w-[38rem]">
@@ -98,7 +108,7 @@ export function MessageComposer({
                 >
                   {provider.models.length > 0
                     ? provider.id
-                    : `${provider.id} (not installed)`}
+                    : t("composer.providerNotInstalled", { provider: provider.id })}
                 </option>
               ))}
             </select>
@@ -115,7 +125,7 @@ export function MessageComposer({
                   </option>
                 ))
               ) : (
-                <option value="">No installed models</option>
+                <option value="">{t("composer.noInstalledModels")}</option>
               )}
             </select>
           </div>
@@ -130,7 +140,7 @@ export function MessageComposer({
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={isSubmitDisabled}
-            placeholder={`Ask ${APP_NAME} to inspect code, memory, tools, or retrieval context`}
+            placeholder={t("composer.placeholder")}
             className="max-h-[200px] min-h-[56px] w-full resize-none overflow-y-auto rounded-[22px] border border-black/6 bg-white/78 px-4 py-4 text-[15px] leading-6 text-[#111827] outline-none transition focus:border-[var(--brand-blue)]/35 placeholder:text-black/40"
           />
 
@@ -140,23 +150,23 @@ export function MessageComposer({
             className="inline-flex h-[56px] w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-5 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.22)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-black/20 disabled:shadow-none lg:w-auto lg:min-w-[126px]"
           >
             <SendHorizontal className="size-4" />
-            {disabled ? "Responding..." : "Send"}
+            {disabled ? t("composer.responding") : t("composer.send")}
           </button>
         </div>
 
         <div className="flex flex-col gap-2 border-t border-black/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs uppercase tracking-[0.18em] text-black/42">
-            Enter to send. Shift + Enter for a new line.
+            {t("composer.enterToSend")}
           </p>
           <p className="text-xs text-black/46">
-            Auto-expands up to 200px.
+            {t("composer.autoExpand")}
           </p>
         </div>
       </div>
 
-      {models.length === 0 ? (
+      {isProviderCatalogLoaded && selectedProviderCatalog && models.length === 0 ? (
         <p className="mt-3 text-sm text-amber-700">
-          No local models are installed for `{selectedProvider}`.
+          {t("composer.noLocalModels", { provider: selectedProvider })}
         </p>
       ) : null}
     </form>

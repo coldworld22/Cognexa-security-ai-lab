@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n";
 import { WorkspaceInvitation, WorkspaceSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -49,6 +50,7 @@ export function WorkspaceSettingsPanel({
   onAcceptInvitation,
   onLogout
 }: WorkspaceSettingsPanelProps) {
+  const { dir, t } = useI18n();
   const canManageWorkspace =
     currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
 
@@ -65,24 +67,25 @@ export function WorkspaceSettingsPanel({
 
       <aside
         className={cn(
-          "absolute inset-y-3 right-3 flex w-[min(100%-1.5rem,430px)] flex-col overflow-hidden rounded-[30px] border border-white/70 bg-[rgba(248,251,253,0.96)] shadow-[0_30px_90px_rgba(15,23,42,0.18)] backdrop-blur-xl",
+          "absolute inset-y-3 flex w-[min(100%-1.5rem,430px)] flex-col overflow-hidden rounded-[30px] border border-white/70 bg-[rgba(248,251,253,0.96)] shadow-[0_30px_90px_rgba(15,23,42,0.18)] backdrop-blur-xl",
+          dir === "rtl" ? "left-3" : "right-3",
           section === "profile" ? "ring-1 ring-[#1a78cf]/12" : ""
         )}
       >
         <div className="flex items-start justify-between gap-4 border-b border-black/5 px-5 py-5">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-tertiary)]">
-              {section === "workspace" ? "Workspace Settings" : "Profile"}
+              {section === "workspace" ? t("workspacePanel.workspaceSettings") : t("common.profile")}
             </p>
             <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
               {section === "workspace"
-                ? currentWorkspace?.name ?? "Workspace"
+                ? currentWorkspace?.name ?? t("common.workspace")
                 : userName}
             </h2>
             <p className="mt-2 text-sm text-[var(--text-secondary)]">
               {section === "workspace"
-                ? "Switch workspaces, manage invitations, and handle member operations."
-                : "Review account context and sign out without leaving the workspace."}
+                ? t("workspacePanel.workspaceDescription")
+                : t("workspacePanel.profileDescription")}
             </p>
           </div>
 
@@ -90,7 +93,7 @@ export function WorkspaceSettingsPanel({
             type="button"
             onClick={onClose}
             className="inline-flex items-center justify-center rounded-full border border-black/10 bg-white/80 p-2 text-[var(--text-primary)] transition hover:bg-white"
-            aria-label="Close workspace settings"
+            aria-label={t("workspacePanel.closeWorkspaceSettings")}
           >
             <X className="size-4" />
           </button>
@@ -101,25 +104,27 @@ export function WorkspaceSettingsPanel({
             <div className="flex items-center gap-2">
               <Settings2 className="size-4 text-[var(--brand-blue)]" />
               <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Workspace
+                {t("common.workspace")}
               </h3>
             </div>
 
             <div className="mt-4 rounded-[20px] border border-black/6 bg-[var(--surface-soft)] px-4 py-4">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="text-base font-semibold text-[var(--text-primary)]">
-                  {currentWorkspace?.name ?? "No workspace selected"}
+                  {currentWorkspace?.name ?? t("workspacePanel.workspaceUnavailable")}
                 </p>
-                {currentWorkspace?.role ? <Badge>{currentWorkspace.role}</Badge> : null}
+                {currentWorkspace?.role ? (
+                  <Badge>{t(`enums.workspaceRoles.${currentWorkspace.role}`)}</Badge>
+                ) : null}
               </div>
               <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                {currentWorkspace?.organizationName ?? "No organization context available."}
+                {currentWorkspace?.organizationName ?? t("workspacePanel.noOrganizationContext")}
               </p>
             </div>
 
             <label className="mt-4 block">
               <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Switch Workspace
+                {t("workspacePanel.switchWorkspace")}
               </span>
               <select
                 value={currentWorkspace?.id ?? ""}
@@ -133,7 +138,7 @@ export function WorkspaceSettingsPanel({
               >
                 {workspaces.map((workspace) => (
                   <option key={workspace.id} value={workspace.id}>
-                    {workspace.name} ({workspace.role})
+                    {workspace.name} ({t(`enums.workspaceRoles.${workspace.role}`)})
                   </option>
                 ))}
               </select>
@@ -148,7 +153,7 @@ export function WorkspaceSettingsPanel({
                 className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
               >
                 <Plus className="size-4" />
-                New Workspace
+                {t("workspacePanel.newWorkspace")}
               </button>
               <button
                 type="button"
@@ -159,7 +164,7 @@ export function WorkspaceSettingsPanel({
                 className="inline-flex items-center justify-center gap-2 rounded-[18px] bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-4 py-3 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.22)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <UserPlus className="size-4" />
-                Invite Member
+                {t("workspacePanel.inviteMember")}
               </button>
             </div>
           </section>
@@ -168,10 +173,10 @@ export function WorkspaceSettingsPanel({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                  Invitations
+                  {t("workspacePanel.invitations")}
                 </h3>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  Pending workspace access requests available to this account.
+                  {t("workspacePanel.invitationsDescription")}
                 </p>
               </div>
               <Badge>{pendingInvitations.length}</Badge>
@@ -180,7 +185,7 @@ export function WorkspaceSettingsPanel({
             <div className="mt-4 space-y-3">
               {pendingInvitations.length === 0 ? (
                 <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-4 text-sm text-[var(--text-secondary)]">
-                  No pending invitations.
+                  {t("workspacePanel.noPendingInvitations")}
                 </div>
               ) : (
                 pendingInvitations.map((invitation) => (
@@ -195,7 +200,7 @@ export function WorkspaceSettingsPanel({
                       {invitation.organizationName}
                     </p>
                     <div className="mt-3 flex items-center justify-between gap-3">
-                      <Badge>{invitation.role}</Badge>
+                      <Badge>{t(`enums.workspaceRoles.${invitation.role}`)}</Badge>
                       <button
                         type="button"
                         onClick={() => {
@@ -204,7 +209,7 @@ export function WorkspaceSettingsPanel({
                         className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--text-primary)] transition hover:bg-[var(--surface-strong)]"
                       >
                         <Check className="size-3.5" />
-                        Accept
+                        {t("common.accept")}
                       </button>
                     </div>
                   </div>
@@ -217,7 +222,7 @@ export function WorkspaceSettingsPanel({
             <div className="flex items-center gap-2">
               <UserCircle2 className="size-4 text-[var(--brand-blue)]" />
               <h3 className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-                Account
+                {t("common.account")}
               </h3>
             </div>
 
@@ -232,7 +237,7 @@ export function WorkspaceSettingsPanel({
                 className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
               >
                 <Shield className="size-4" />
-                Admin
+                {t("workspacePanel.admin")}
               </Link>
               <button
                 type="button"
@@ -240,7 +245,7 @@ export function WorkspaceSettingsPanel({
                 className="inline-flex items-center justify-center gap-2 rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[var(--surface-soft)]"
               >
                 <LogOut className="size-4" />
-                Logout
+                {t("workspacePanel.logout")}
               </button>
             </div>
           </section>

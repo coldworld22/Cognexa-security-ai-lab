@@ -44,7 +44,14 @@ export function validateQuery(schema: ZodTypeAny) {
       return;
     }
 
-    Object.assign(request.query, result.data);
+    // Express recomputes `request.query` from the raw URL, so mutate-by-assign
+    // does not reliably preserve coerced values for downstream handlers.
+    Object.defineProperty(request, "query", {
+      value: result.data,
+      configurable: true,
+      enumerable: true,
+      writable: true
+    });
     next();
   };
 }

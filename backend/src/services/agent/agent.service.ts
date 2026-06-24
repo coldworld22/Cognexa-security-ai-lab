@@ -12,6 +12,7 @@ import { TaskPlanner } from "../../agent/planner/task-planner";
 import { AuthorizationService } from "../authorization/authorization.service";
 import { ToolExecutionService } from "../tool-execution/tool-execution.service";
 import { AppError } from "../../utils/app-error";
+import { PolicyService } from "../policy/policy.service";
 
 interface ExecuteAgentInput {
   actor: AccessContext;
@@ -53,6 +54,7 @@ export class AgentService {
     private readonly planner: TaskPlanner,
     private readonly executor: AgentExecutor,
     private readonly authorization: AuthorizationService,
+    private readonly policy: PolicyService,
     private readonly logger: Logger
   ) {}
 
@@ -101,6 +103,15 @@ export class AgentService {
       resource: "agents.execute",
       action: "execute_agent",
       reason: "Agent execution requires 'agents' permission"
+    });
+    await this.policy.evaluatePolicy({
+      actor: input.actor,
+      action: "agents.execute",
+      categories: ["agent_execution"],
+      content: input.objective,
+      metadata: {
+        enabledTools: input.enabledTools
+      }
     });
 
     if (input.conversationId) {

@@ -1,4 +1,7 @@
+"use client";
+
 import { APP_NAME, APP_TAGLINE } from "@/lib/branding";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 interface AppIdentityProps {
@@ -84,6 +87,7 @@ export function AppIdentity({
   tone = "light",
   size = "md"
 }: AppIdentityProps) {
+  const { t } = useI18n();
   const scale = sizeClassNames[size];
   const toneStyles = toneClassNames[tone];
 
@@ -116,12 +120,12 @@ export function AppIdentity({
               toneStyles.subtitle
             )}
           >
-            AI Workspace
+            {t("brand.aiWorkspace")}
           </p>
         ) : null}
         {showTagline ? (
           <p className={cn("mt-3 max-w-md leading-6", scale.tagline, toneStyles.tagline)}>
-            {APP_TAGLINE}
+            {t("brand.tagline") || APP_TAGLINE}
           </p>
         ) : null}
       </div>

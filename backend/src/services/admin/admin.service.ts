@@ -6,8 +6,31 @@ import { TaskRepository } from "../../database/repositories/task.repository";
 import { ToolExecutionRepository } from "../../database/repositories/tool-execution.repository";
 import { UserRepository } from "../../database/repositories/user.repository";
 import { AuthorizationService } from "../authorization/authorization.service";
+import {
+  EndpointMonitorService,
+  NetworkScanResult
+} from "../endpoints/endpoint-monitor.service";
 import { HealthService } from "../health/health.service";
 import { AppError } from "../../utils/app-error";
+import {
+  SecurityReviewRequest,
+  SecurityReviewResult,
+  SecurityReviewService
+} from "../security-review/security-review.service";
+import {
+  WebsiteScanRequest,
+  WebsiteScanResult,
+  WebsiteScannerService
+} from "../website-scanner/website-scanner.service";
+import {
+  AuthorizedTestingDevModeStatus,
+  AuthorizedSecurityTestReport,
+  AuthorizedSecurityTestRunSummary,
+  DomainOwnershipVerificationSummary,
+  RunAuthorizedSecurityTestRequest,
+  StartDomainOwnershipVerificationRequest
+} from "../authorized-testing/authorized-security-testing.types";
+import { AuthorizedSecurityTestingService } from "../authorized-testing/authorized-security-testing.service";
 
 export interface ManagedUser {
   id: string;
@@ -29,7 +52,11 @@ export class AdminService {
     private readonly toolExecutions: ToolExecutionRepository,
     private readonly tasks: TaskRepository,
     private readonly health: HealthService,
-    private readonly authorization: AuthorizationService
+    private readonly authorization: AuthorizationService,
+    private readonly endpoints: EndpointMonitorService,
+    private readonly websiteScanner: WebsiteScannerService,
+    private readonly securityReview: SecurityReviewService,
+    private readonly authorizedTesting: AuthorizedSecurityTestingService
   ) {}
 
   async getDashboard(actor: AccessContext) {
@@ -140,6 +167,116 @@ export class AdminService {
     ]);
 
     return this.toManagedUser(updatedUser);
+  }
+
+  async scanNetwork(actor: AccessContext): Promise<NetworkScanResult> {
+    await this.authorization.assertPermission(actor, "admin_dashboard", {
+      layer: "service",
+      resource: "admin.network.scan",
+      action: "scan_network",
+      reason: "Network scanning requires 'admin_dashboard' permission"
+    });
+
+    return this.endpoints.getCurrentNetworkSnapshot();
+  }
+
+  async startNetworkScan(actor: AccessContext): Promise<{
+    job: Awaited<ReturnType<EndpointMonitorService["startNetworkScan"]>>;
+  }> {
+    await this.authorization.assertPermission(actor, "admin_dashboard", {
+      layer: "service",
+      resource: "admin.network.scan",
+      action: "start_network_scan",
+      reason: "Network scanning requires 'admin_dashboard' permission"
+    });
+
+    return {
+      job: await this.endpoints.startNetworkScan()
+    };
+  }
+
+  async resolveNetworkNames(actor: AccessContext): Promise<{
+    job: Awaited<ReturnType<EndpointMonitorService["startNetworkScan"]>>;
+  }> {
+    await this.authorization.assertPermission(actor, "admin_dashboard", {
+      layer: "service",
+      resource: "admin.network.resolve_names",
+      action: "resolve_network_names",
+      reason: "Name resolution requires 'admin_dashboard' permission"
+    });
+
+    return {
+      job: await this.endpoints.startNetworkScan({
+        forceNameResolution: true
+      })
+    };
+  }
+
+  async scanWebsite(
+    actor: AccessContext,
+    input: WebsiteScanRequest
+  ): Promise<WebsiteScanResult> {
+    return this.websiteScanner.scanWebsite(actor, input);
+  }
+
+  async runSecurityReview(
+    actor: AccessContext,
+    input: SecurityReviewRequest
+  ): Promise<SecurityReviewResult> {
+    return this.securityReview.runReview(actor, input);
+  }
+
+  async startDomainVerification(
+    actor: AccessContext,
+    input: StartDomainOwnershipVerificationRequest
+  ): Promise<DomainOwnershipVerificationSummary> {
+    return this.authorizedTesting.startDomainVerification(actor, input);
+  }
+
+  async checkDomainVerification(
+    actor: AccessContext,
+    verificationId: string,
+    devModeBypass = false
+  ): Promise<DomainOwnershipVerificationSummary> {
+    return this.authorizedTesting.checkDomainVerification(
+      actor,
+      verificationId,
+      devModeBypass
+    );
+  }
+
+  async listDomainVerifications(
+    actor: AccessContext,
+    limit = 25
+  ): Promise<DomainOwnershipVerificationSummary[]> {
+    return this.authorizedTesting.listDomainVerifications(actor, limit);
+  }
+
+  async getAuthorizedTestingDevMode(
+    actor: AccessContext
+  ): Promise<AuthorizedTestingDevModeStatus> {
+    return this.authorizedTesting.getVerificationBypassStatus(actor);
+  }
+
+  async runAuthorizedSecurityTest(
+    actor: AccessContext,
+    input: RunAuthorizedSecurityTestRequest
+  ): Promise<AuthorizedSecurityTestReport> {
+    return this.authorizedTesting.runAuthorizedSecurityTest(actor, input);
+  }
+
+  async getAuthorizedSecurityTestRun(
+    actor: AccessContext,
+    runId: string
+  ): Promise<AuthorizedSecurityTestReport> {
+    return this.authorizedTesting.getAuthorizedSecurityTestRun(actor, runId);
+  }
+
+  async listAuthorizedSecurityTestRuns(
+    actor: AccessContext,
+    limit = 20
+  ): Promise<AuthorizedSecurityTestRunSummary[]> {
+    return this.authorizedTesting.listAuthorizedSecurityTestRuns(actor, limit);
   }
 
   private toManagedUser(user: {
