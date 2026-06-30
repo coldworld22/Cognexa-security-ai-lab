@@ -10,8 +10,17 @@ import {
   AdminNetworkEvent,
   AdminNetworkJob,
   AdminNetworkScan,
+  PrivateModeCircuitStatus,
+  PrivateModeConfig,
+  PrivateModeExitLog,
+  PrivateModeLeakTestResult,
+  PrivateModeSessionState,
+  PrivateModeSession,
+  PrivateModeVerificationResult,
   AdminSecurityReviewResult,
   AuthorizedTestingDevModeStatus,
+  AdvancedPenetrationTestRunDetail,
+  AdvancedPenetrationTestRunSummary,
   AuthorizedSecurityTestReport,
   AuthorizedSecurityTestRunSummary,
   AdminWebsiteScan,
@@ -35,7 +44,7 @@ import {
 } from "./types";
 import { SessionPersistence } from "./auth-cookies";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api/v1";
+const API_URL = resolveApiUrl(process.env.NEXT_PUBLIC_API_URL);
 const SESSION_STORAGE_KEY = "security-ai-lab.session";
 const NETWORK_ERROR_MESSAGE =
   "Unable to reach the server. Check that the backend is running and try again.";
@@ -84,6 +93,53 @@ interface AuthPayload {
   password: string;
 }
 
+function resolveDefaultApiUrl(): string {
+  if (typeof window !== "undefined" && window.location.protocol === "https:") {
+    return "https://localhost:5000/api/v1";
+  }
+
+  return "http://localhost:5000/api/v1";
+}
+
+function resolveApiUrl(configuredUrl?: string): string {
+  const trimmedConfiguredUrl = configuredUrl?.trim();
+  if (!trimmedConfiguredUrl) {
+    return resolveDefaultApiUrl();
+  }
+
+  if (!isBrowser()) {
+    return trimmedConfiguredUrl.replace(/\/$/, "");
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedConfiguredUrl);
+
+    if (
+      window.location.protocol === "http:" &&
+      parsedUrl.protocol === "https:" &&
+      isLocalhostHostname(window.location.hostname) &&
+      isLocalhostHostname(parsedUrl.hostname)
+    ) {
+      parsedUrl.protocol = "http:";
+      return parsedUrl.toString().replace(/\/$/, "");
+    }
+  } catch {
+    return trimmedConfiguredUrl.replace(/\/$/, "");
+  }
+
+  return trimmedConfiguredUrl.replace(/\/$/, "");
+}
+
+function isLocalhostHostname(hostname: string): boolean {
+  const normalizedHostname = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+
+  return (
+    normalizedHostname === "localhost" ||
+    normalizedHostname === "127.0.0.1" ||
+    normalizedHostname === "::1"
+  );
+}
+
 export interface WorkspaceSessionPayload {
   currentWorkspace: WorkspaceSummary;
   workspaces: WorkspaceSummary[];
@@ -104,6 +160,255 @@ function getStorageForPersistence(persistence: SessionPersistence): Storage | nu
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+const EMPTY_AUTHORIZED_SECURITY_BASELINE: AuthorizedSecurityTestReport["baseline"] = {
+  requestedUrl: "",
+  finalUrl: "",
+  hostname: "",
+  pagesScanned: 0,
+  maxPages: 0,
+  securityScore: 0,
+  grade: "F",
+  passiveWarnings: [],
+  declaredAuthEndpoints: []
+};
+
+const EMPTY_AUTHORIZED_SECURITY_SUMMARY: AuthorizedSecurityTestReport["summary"] = {
+  riskLevel: "low",
+  headline: "",
+  planSource: "deterministic",
+  requestBudget: 0,
+  requestsSent: 0,
+  modulesExecuted: [],
+  findingCounts: {
+    info: 0,
+    low: 0,
+    medium: 0,
+    high: 0
+  },
+  recommendedActions: [],
+  reversible: true
+};
+
+const EMPTY_AUTHORIZED_SECURITY_AI_ANALYSIS: AuthorizedSecurityTestReport["aiAnalysis"] =
+  {
+    status: "unavailable",
+    predictions: [],
+    nextSteps: []
+  };
+
+function normalizeAuthorizedSecurityTestReport(
+  report: AuthorizedSecurityTestReport
+): AuthorizedSecurityTestReport {
+  const baselineSource: Record<string, unknown> = isRecord(report.baseline)
+    ? report.baseline
+    : {};
+  const summarySource: Record<string, unknown> = isRecord(report.summary)
+    ? report.summary
+    : {};
+  const aiAnalysisSource: Record<string, unknown> = isRecord(report.aiAnalysis)
+    ? report.aiAnalysis
+    : {};
+
+  const executionInsights = isRecord(summarySource.executionInsights)
+    ? {
+        moduleConcurrency: asNumber(summarySource.executionInsights.moduleConcurrency),
+        probeCacheHits: asNumber(summarySource.executionInsights.probeCacheHits),
+        probeCacheMisses: asNumber(summarySource.executionInsights.probeCacheMisses),
+        adaptiveBackoffCount: asNumber(
+          summarySource.executionInsights.adaptiveBackoffCount
+        ),
+        rateLimitedResponses: asNumber(
+          summarySource.executionInsights.rateLimitedResponses
+        ),
+        networkRequestsSent: asNumber(
+          summarySource.executionInsights.networkRequestsSent
+        )
+      }
+    : undefined;
+
+  const adaptation = isRecord(summarySource.adaptation)
+    ? {
+        ...summarySource.adaptation,
+        followUpExecuted: asArray<
+          NonNullable<AuthorizedSecurityTestReport["summary"]["adaptation"]>["followUpExecuted"][number]
+        >(summarySource.adaptation.followUpExecuted),
+        decisions: asArray<
+          NonNullable<AuthorizedSecurityTestReport["summary"]["adaptation"]>["decisions"][number]
+        >(summarySource.adaptation.decisions).map((decision) => ({
+          ...decision,
+          triggerFindingIds: isRecord(decision)
+            ? asStringArray(decision.triggerFindingIds)
+            : [],
+          triggerCategories: isRecord(decision)
+            ? asArray<
+                NonNullable<AuthorizedSecurityTestReport["summary"]["adaptation"]>["decisions"][number]["triggerCategories"][number]
+              >(decision.triggerCategories)
+            : []
+        }))
+      }
+    : undefined;
+
+  const campaignStory = isRecord(summarySource.campaignStory)
+    ? {
+        ...summarySource.campaignStory,
+        headline: asString(summarySource.campaignStory.headline),
+        narrative: asString(summarySource.campaignStory.narrative),
+        sections: asArray<
+          NonNullable<AuthorizedSecurityTestReport["summary"]["campaignStory"]>["sections"][number]
+        >(summarySource.campaignStory.sections).map((section) => ({
+          ...section,
+          evidence: isRecord(section) ? asStringArray(section.evidence) : []
+        })),
+        chainHighlights: asStringArray(summarySource.campaignStory.chainHighlights)
+      }
+    : undefined;
+
+  return {
+    ...report,
+    guardrails: asStringArray(report.guardrails),
+    authProfiles: asArray<AuthorizedSecurityTestReport["authProfiles"][number]>(
+      report.authProfiles
+    ).map((profile) => ({
+      ...profile,
+      headerNames: isRecord(profile) ? asStringArray(profile.headerNames) : [],
+      cookieNames: isRecord(profile) ? asStringArray(profile.cookieNames) : []
+    })),
+    baseline: {
+      ...EMPTY_AUTHORIZED_SECURITY_BASELINE,
+      ...baselineSource,
+      pagesScanned: asNumber(
+        baselineSource.pagesScanned,
+        EMPTY_AUTHORIZED_SECURITY_BASELINE.pagesScanned
+      ),
+      maxPages: asNumber(
+        baselineSource.maxPages,
+        EMPTY_AUTHORIZED_SECURITY_BASELINE.maxPages
+      ),
+      securityScore: asNumber(
+        baselineSource.securityScore,
+        EMPTY_AUTHORIZED_SECURITY_BASELINE.securityScore
+      ),
+      passiveWarnings: asStringArray(baselineSource.passiveWarnings),
+      declaredAuthEndpoints: asArray<
+        AuthorizedSecurityTestReport["baseline"]["declaredAuthEndpoints"][number]
+      >(baselineSource.declaredAuthEndpoints),
+      manualFormValidation: isRecord(baselineSource.manualFormValidation)
+        ? {
+            rateLimitPerMinute: Math.max(
+              1,
+              Math.min(
+                60,
+                asNumber(baselineSource.manualFormValidation.rateLimitPerMinute, 5)
+              )
+            ),
+            credentialLabels: asStringArray(
+              baselineSource.manualFormValidation.credentialLabels
+            ),
+            ...(asString(baselineSource.manualFormValidation.notes).trim()
+              ? {
+                  notes: asString(
+                    baselineSource.manualFormValidation.notes
+                  ).trim()
+                }
+              : {})
+          }
+        : undefined
+    },
+    plan: asArray<AuthorizedSecurityTestReport["plan"][number]>(report.plan).map(
+      (step) => ({
+        ...step,
+        stopConditions: isRecord(step) ? asStringArray(step.stopConditions) : []
+      })
+    ),
+    summary: {
+      ...EMPTY_AUTHORIZED_SECURITY_SUMMARY,
+      ...summarySource,
+      requestBudget: asNumber(
+        summarySource.requestBudget,
+        EMPTY_AUTHORIZED_SECURITY_SUMMARY.requestBudget
+      ),
+      requestsSent: asNumber(
+        summarySource.requestsSent,
+        EMPTY_AUTHORIZED_SECURITY_SUMMARY.requestsSent
+      ),
+      modulesExecuted: asArray<
+        AuthorizedSecurityTestReport["summary"]["modulesExecuted"][number]
+      >(summarySource.modulesExecuted),
+      prioritizedModules: Array.isArray(summarySource.prioritizedModules)
+        ? (summarySource.prioritizedModules as AuthorizedSecurityTestReport["summary"]["prioritizedModules"])
+        : undefined,
+      executionInsights,
+      adaptation,
+      campaignStory,
+      findingCounts: isRecord(summarySource.findingCounts)
+        ? {
+            info: asNumber(summarySource.findingCounts.info),
+            low: asNumber(summarySource.findingCounts.low),
+            medium: asNumber(summarySource.findingCounts.medium),
+            high: asNumber(summarySource.findingCounts.high)
+          }
+        : EMPTY_AUTHORIZED_SECURITY_SUMMARY.findingCounts,
+      recommendedActions: asStringArray(summarySource.recommendedActions),
+      reversible: asBoolean(
+        summarySource.reversible,
+        EMPTY_AUTHORIZED_SECURITY_SUMMARY.reversible
+      )
+    },
+    findings: asArray<AuthorizedSecurityTestReport["findings"][number]>(report.findings).map(
+      (finding) => ({
+        ...finding,
+        evidence: isRecord(finding) ? asStringArray(finding.evidence) : [],
+        supportingEventIds: isRecord(finding)
+          ? asStringArray(finding.supportingEventIds)
+          : []
+      })
+    ),
+    attackPaths: asArray<AuthorizedSecurityTestReport["attackPaths"][number]>(
+      report.attackPaths
+    ).map((attackPath) => ({
+      ...attackPath,
+      supportingFindingIds: isRecord(attackPath)
+        ? asStringArray(attackPath.supportingFindingIds)
+        : []
+    })),
+    aiAnalysis: {
+      ...EMPTY_AUTHORIZED_SECURITY_AI_ANALYSIS,
+      ...aiAnalysisSource,
+      predictions: asArray<
+        AuthorizedSecurityTestReport["aiAnalysis"]["predictions"][number]
+      >(aiAnalysisSource.predictions).map((prediction) => ({
+        ...prediction,
+        indicators: isRecord(prediction) ? asStringArray(prediction.indicators) : []
+      })),
+      nextSteps: asStringArray(aiAnalysisSource.nextSteps)
+    },
+    warnings: asStringArray(report.warnings),
+    events: asArray<AuthorizedSecurityTestReport["events"][number]>(report.events)
+  };
 }
 
 function parseStoredSession(value: unknown): AppSession | null {
@@ -312,6 +617,10 @@ async function performFetch(
 
     throw error;
   }
+}
+
+export function getConfiguredApiUrl(): string {
+  return API_URL;
 }
 
 async function refreshSession(session: AppSession): Promise<AppSession | null> {
@@ -731,6 +1040,96 @@ export async function runSecurityReviewLab(payload: {
   });
 }
 
+export async function getPrivateModeConfig(): Promise<PrivateModeConfig> {
+  const response = await requestJson<{ config: PrivateModeConfig }>(
+    "/admin/private-mode/config"
+  );
+  return response.config;
+}
+
+export async function updatePrivateModeConfig(
+  payload: Partial<PrivateModeConfig>
+): Promise<PrivateModeConfig> {
+  const response = await requestJson<{ config: PrivateModeConfig }>(
+    "/admin/private-mode/config",
+    {
+      method: "PUT",
+      body: JSON.stringify(payload)
+    }
+  );
+  return response.config;
+}
+
+export async function activatePrivateMode(
+  payload: Partial<PrivateModeConfig>
+): Promise<PrivateModeSession> {
+  const response = await requestJson<{ session: PrivateModeSession }>(
+    "/admin/private-mode/activate",
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+  return response.session;
+}
+
+export async function deactivatePrivateMode(sessionId?: string): Promise<void> {
+  await requestJson<void>("/admin/private-mode/deactivate", {
+    method: "POST",
+    body: JSON.stringify({
+      sessionId
+    })
+  });
+}
+
+export async function getPrivateModeSession(): Promise<PrivateModeSessionState> {
+  return requestJson<PrivateModeSessionState>("/admin/private-mode/session");
+}
+
+export async function verifyPrivateMode(): Promise<PrivateModeVerificationResult> {
+  const response = await requestJson<{ verification: PrivateModeVerificationResult }>(
+    "/admin/private-mode/verify",
+    {
+      method: "POST"
+    }
+  );
+  return response.verification;
+}
+
+export async function leakTestPrivateMode(): Promise<PrivateModeLeakTestResult> {
+  const response = await requestJson<{ leakTest: PrivateModeLeakTestResult }>(
+    "/admin/private-mode/leak-test",
+    {
+      method: "POST"
+    }
+  );
+  return response.leakTest;
+}
+
+export async function rotatePrivateModeCircuit(
+  sessionId?: string
+): Promise<PrivateModeCircuitStatus> {
+  const response = await requestJson<{ circuit: PrivateModeCircuitStatus }>(
+    "/admin/private-mode/rotate",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId
+      })
+    }
+  );
+  return response.circuit;
+}
+
+export async function listPrivateModeExitLogs(
+  limit = 50
+): Promise<PrivateModeExitLog[]> {
+  const response = await requestJson<{ logs: PrivateModeExitLog[] }>(
+    `/admin/private-mode/exit-logs?limit=${limit}`
+  );
+  return response.logs;
+}
+
 export async function startDomainOwnershipVerification(payload: {
   target: string;
   method?: DomainOwnershipVerificationMethod;
@@ -789,9 +1188,14 @@ export async function runAuthorizedSecurityTest(payload: {
   modules?: Array<
     | "sql_injection"
     | "xss"
+    | "csrf"
     | "authentication"
     | "authorization"
     | "api_security"
+    | "ssrf"
+    | "open_redirect"
+    | "business_logic"
+    | "oauth_flow"
     | "waf"
     | "session_management"
   >;
@@ -801,11 +1205,33 @@ export async function runAuthorizedSecurityTest(payload: {
     headers?: Record<string, string>;
     cookies?: Record<string, string>;
   }>;
+  authEndpointDescriptors?: Array<{
+    type: "auth_api";
+    name: string;
+    entryUrl: string;
+    endpoint: string;
+    method?: "POST";
+    contentType?: string;
+    fields: string[];
+    tokenFields?: string[];
+    stagingOnly?: boolean;
+    productionMode?: "passive_only";
+  }>;
+  manualFormValidation?: {
+    rateLimitPerMinute?: number;
+    credentialLabels?: string[];
+    notes?: string;
+  };
 }): Promise<AuthorizedSecurityTestReport> {
-  return requestJson<AuthorizedSecurityTestReport>("/admin/authorized-testing/runs", {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
+  const report = await requestJson<AuthorizedSecurityTestReport>(
+    "/admin/authorized-testing/runs",
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+
+  return normalizeAuthorizedSecurityTestReport(report);
 }
 
 export async function listAuthorizedSecurityTestRuns(
@@ -821,9 +1247,174 @@ export async function listAuthorizedSecurityTestRuns(
 export async function getAuthorizedSecurityTestRun(
   runId: string
 ): Promise<AuthorizedSecurityTestReport> {
-  return requestJson<AuthorizedSecurityTestReport>(
+  const report = await requestJson<AuthorizedSecurityTestReport>(
     `/admin/authorized-testing/runs/${runId}`
   );
+
+  return normalizeAuthorizedSecurityTestReport(report);
+}
+
+export async function listAdvancedPenetrationTestRuns(
+  limit = 20
+): Promise<AdvancedPenetrationTestRunSummary[]> {
+  const response = await requestJson<{
+    runs: AdvancedPenetrationTestRunSummary[];
+  }>(`/admin/authorized-testing/advanced-runs?limit=${limit}`);
+
+  return response.runs;
+}
+
+export async function getAdvancedPenetrationTestRun(
+  runId: string
+): Promise<AdvancedPenetrationTestRunDetail> {
+  const response = await requestJson<{
+    run: AdvancedPenetrationTestRunDetail;
+  }>(`/admin/authorized-testing/advanced-runs/${runId}`);
+
+  return response.run;
+}
+
+export async function getAdvancedPenetrationTestReport(
+  runId: string
+): Promise<Record<string, unknown>> {
+  const response = await requestJson<{
+    report: Record<string, unknown>;
+  }>(`/admin/authorized-testing/advanced-runs/${runId}/report`);
+
+  return response.report;
+}
+
+interface StreamAdvancedPenetrationTestInput {
+  target: string;
+  verificationId: string;
+  maxPages?: number;
+  maxRequests?: number;
+  conversationId?: string;
+  authProfiles?: Array<{
+    name: string;
+    role: "anonymous" | "low_privilege" | "high_privilege";
+    headers?: Record<string, string>;
+    cookies?: Record<string, string>;
+  }>;
+  authEndpointDescriptors?: Array<{
+    type: "auth_api";
+    name: string;
+    entryUrl: string;
+    endpoint: string;
+    method?: "POST";
+    contentType?: string;
+    fields: string[];
+    tokenFields?: string[];
+    stagingOnly?: boolean;
+    productionMode?: "passive_only";
+  }>;
+  manualFormValidation?: {
+    rateLimitPerMinute?: number;
+    credentialLabels?: string[];
+    notes?: string;
+  };
+  onEvent: (event: string, data: unknown) => void;
+}
+
+export async function streamAdvancedPenetrationTest(
+  input: StreamAdvancedPenetrationTestInput
+): Promise<void> {
+  let session = getStoredSession();
+  if (!session) {
+    throw new Error("You must sign in before using the assistant.");
+  }
+
+  const makeRequest = async (accessToken: string) =>
+    performFetch(`${API_URL}/admin/authorized-testing/advanced-runs/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+        ...(session?.currentWorkspace?.id
+          ? {
+              "X-Workspace-Id": session.currentWorkspace.id
+            }
+          : {})
+      },
+      body: JSON.stringify({
+        target: input.target,
+        verificationId: input.verificationId,
+        maxPages: input.maxPages,
+        maxRequests: input.maxRequests,
+        conversationId: input.conversationId,
+        authProfiles: input.authProfiles,
+        authEndpointDescriptors: input.authEndpointDescriptors,
+        manualFormValidation: input.manualFormValidation
+      })
+    });
+
+  let response = await makeRequest(session.tokens.accessToken);
+
+  if (response.status === 401) {
+    const refreshedSession = await refreshSession(session);
+    if (!refreshedSession) {
+      throw new Error("Your session expired. Sign in again.");
+    }
+
+    session = refreshedSession;
+    response = await makeRequest(refreshedSession.tokens.accessToken);
+  }
+
+  if (!response.ok || !response.body) {
+    throw new Error(await parseError(response));
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const reader = response.body.getReader();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const eventBlocks = buffer.split("\n\n");
+    buffer = eventBlocks.pop() ?? "";
+
+    for (const block of eventBlocks) {
+      const lines = block.split("\n");
+      const eventName =
+        lines.find((line) => line.startsWith("event: "))?.slice(7).trim() ?? "message";
+      const data = lines
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => line.slice(6))
+        .join("\n");
+
+      if (!data) {
+        continue;
+      }
+
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data) as unknown;
+      } catch {
+        continue;
+      }
+
+      input.onEvent(eventName, payload);
+
+      if (eventName === "error") {
+        const errorPayload =
+          payload && typeof payload === "object"
+            ? (payload as { error?: string })
+            : undefined;
+        throw new Error(
+          errorPayload?.error ?? "Advanced penetration test stream failed."
+        );
+      }
+
+      if (eventName === "finished") {
+        return;
+      }
+    }
+  }
 }
 
 export function createAdminNetworkWebSocketUrl(): string {

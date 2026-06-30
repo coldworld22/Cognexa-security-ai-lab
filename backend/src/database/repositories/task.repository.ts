@@ -158,6 +158,44 @@ export class TaskRepository extends BaseRepository {
     return result.rows.map((row) => this.mapRow(row));
   }
 
+  async listPenetrationTestsByWorkspace(
+    workspaceId: string,
+    limit = 20
+  ): Promise<TaskEntity[]> {
+    const result = await this.pool.query(
+      `SELECT t.id, t.workspace_id, t.agent_id, t.conversation_id, t.title, t.objective, t.status, t.result, t.metadata, t.created_at, t.updated_at
+       FROM tasks t
+       WHERE t.workspace_id = $1
+         AND t.metadata ? 'penetrationTest'
+       ORDER BY t.created_at DESC
+       LIMIT $2`,
+      [workspaceId, limit]
+    );
+
+    return result.rows.map((row) => this.mapRow(row));
+  }
+
+  async findPenetrationTestByRunId(
+    workspaceId: string,
+    runId: string
+  ): Promise<TaskEntity | null> {
+    const result = await this.pool.query(
+      `SELECT t.id, t.workspace_id, t.agent_id, t.conversation_id, t.title, t.objective, t.status, t.result, t.metadata, t.created_at, t.updated_at
+       FROM tasks t
+       WHERE t.workspace_id = $1
+         AND t.metadata ? 'penetrationTest'
+         AND t.metadata->'penetrationTest'->>'runId' = $2
+       LIMIT 1`,
+      [workspaceId, runId]
+    );
+
+    if (result.rowCount === 0) {
+      return null;
+    }
+
+    return this.mapRow(result.rows[0]);
+  }
+
   async listByStatuses(
     statuses: TaskEntity["status"][],
     limit = 100

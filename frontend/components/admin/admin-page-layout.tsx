@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 type AdminView =
   | "dashboard"
   | "network-monitor"
+  | "private-mode"
   | "authorized-testing"
   | "website-scanner"
   | "policies"
@@ -45,6 +46,11 @@ export function AdminPageLayout({
       href: "/admin/network-monitor",
       label: t("adminNetwork.navLabel"),
       view: "network-monitor"
+    },
+    {
+      href: "/admin/private-mode",
+      label: t("privateMode.navLabel"),
+      view: "private-mode"
     },
     {
       href: "/admin/authorized-testing",

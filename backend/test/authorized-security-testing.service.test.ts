@@ -1434,6 +1434,607 @@ test("AuthorizedSecurityTestingService performs deep read-only API security chec
   );
 });
 
+test("AuthorizedSecurityTestingService executes read-only SSRF, CSRF, redirect, business-logic, and OAuth modules", async () => {
+  const verificationRepository = createVerificationRepository();
+  const runRepository = createRunRepository();
+  const eventRepository = createEventRepository();
+  const scanResult = createScanResult();
+  scanResult.pages.push(
+    {
+      url: "https://example.com/fetch?url=https://example.com/health",
+      title: "Fetcher",
+      statusCode: 200,
+      contentType: "text/html; charset=utf-8",
+      linkCount: 0,
+      sameOriginLinkCount: 0,
+      externalLinkCount: 0,
+      formCount: 0,
+      loginFormCount: 0,
+      externalFormActionCount: 0,
+      insecurePasswordSubmitCount: 0,
+      inlineScriptCount: 0,
+      externalScriptCount: 0,
+      thirdPartyScriptCount: 0,
+      mixedContentCount: 0,
+      directoryListingDetected: false
+    },
+    {
+      url: "https://example.com/redirect?next=/dashboard",
+      title: "Redirect",
+      statusCode: 200,
+      contentType: "text/html; charset=utf-8",
+      linkCount: 0,
+      sameOriginLinkCount: 0,
+      externalLinkCount: 0,
+      formCount: 0,
+      loginFormCount: 0,
+      externalFormActionCount: 0,
+      insecurePasswordSubmitCount: 0,
+      inlineScriptCount: 0,
+      externalScriptCount: 0,
+      thirdPartyScriptCount: 0,
+      mixedContentCount: 0,
+      directoryListingDetected: false
+    },
+    {
+      url: "https://example.com/checkout?step=review",
+      title: "Checkout",
+      statusCode: 200,
+      contentType: "text/html; charset=utf-8",
+      linkCount: 0,
+      sameOriginLinkCount: 0,
+      externalLinkCount: 0,
+      formCount: 0,
+      loginFormCount: 0,
+      externalFormActionCount: 0,
+      insecurePasswordSubmitCount: 0,
+      inlineScriptCount: 0,
+      externalScriptCount: 0,
+      thirdPartyScriptCount: 0,
+      mixedContentCount: 0,
+      directoryListingDetected: false
+    },
+    {
+      url: "https://example.com/oauth/authorize?client_id=web&response_type=code&redirect_uri=https://example.com/callback",
+      title: "Authorize",
+      statusCode: 200,
+      contentType: "text/html; charset=utf-8",
+      linkCount: 0,
+      sameOriginLinkCount: 0,
+      externalLinkCount: 0,
+      formCount: 0,
+      loginFormCount: 0,
+      externalFormActionCount: 0,
+      insecurePasswordSubmitCount: 0,
+      inlineScriptCount: 0,
+      externalScriptCount: 0,
+      thirdPartyScriptCount: 0,
+      mixedContentCount: 0,
+      directoryListingDetected: false
+    }
+  );
+  scanResult.exposures = {
+    probedEndpoints: 2,
+    publicApiDocs: 1,
+    publicApiEndpoints: 1,
+    publicDatabaseInterfaces: 0,
+    publicInternalServices: 0,
+    sensitiveFiles: 0,
+    endpoints: [
+      {
+        url: "https://example.com/.well-known/openid-configuration",
+        kind: "api_documentation",
+        statusCode: 200,
+        contentType: "application/json; charset=utf-8",
+        evidence: ["oidc-metadata"]
+      },
+      {
+        url: "https://example.com/oauth/authorize?client_id=web&response_type=code&redirect_uri=https://example.com/callback",
+        kind: "api_endpoint",
+        statusCode: 200,
+        contentType: "text/html; charset=utf-8",
+        evidence: ["oauth-authorize"]
+      }
+    ]
+  };
+
+  const verification = await verificationRepository.create({
+    workspaceId: "workspace-1",
+    organizationId: "org-1",
+    requestedByUserId: "user-1",
+    hostname: "example.com",
+    method: "dns_txt",
+    status: "verified",
+    challengeToken: "token-5",
+    challengeDetails: {
+      requestedUrl: "https://example.com",
+      recordName: "_cognexa-security-test.example.com",
+      expectedValue: "cognexa-verification=token-5"
+    },
+    expiresAt: "2026-07-21T07:00:00.000Z",
+    verifiedAt: "2026-06-21T07:00:00.000Z"
+  } as never);
+
+  const service = new AuthorizedSecurityTestingService(
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "allow"
+      })
+    } as never,
+    {
+      scanWebsite: async () => scanResult
+    } as never,
+    {
+      createStructuredOutput: async () => {
+        throw new Error("LLM unavailable in test");
+      }
+    } as never,
+    verificationRepository as never,
+    runRepository as never,
+    eventRepository as never,
+    {
+      defaultProvider: "qwen",
+      defaultModel: "qwen2.5-coder",
+      lookupHost: (async () => [
+        {
+          address: "93.184.216.34",
+          family: 4
+        }
+      ]) as never,
+      fetchImpl: (async (input, init) => {
+        const rawUrl =
+          input instanceof URL
+            ? input.toString()
+            : typeof input === "string"
+              ? input
+              : input.url;
+        const url = new URL(rawUrl);
+        const method = init?.method ?? "GET";
+
+        if (method === "OPTIONS") {
+          return new Response("", { status: 204 });
+        }
+
+        if (url.pathname === "/.well-known/openid-configuration") {
+          return new Response(
+            JSON.stringify({
+              issuer: "https://example.com",
+              authorization_endpoint: "https://example.com/oauth/authorize",
+              response_types_supported: ["code", "id_token token"],
+              grant_types_supported: ["authorization_code", "refresh_token", "password"]
+            }),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/json; charset=utf-8"
+              }
+            }
+          );
+        }
+
+        if (url.pathname === "/fetch") {
+          const destination = url.searchParams.get("url") ?? "";
+          if (destination.includes("/robots.txt?cognexa_ssrf_probe=")) {
+            return new Response(
+              `User-agent: *\nDisallow: /private\nProbe=${destination}`,
+              {
+                status: 200,
+                headers: {
+                  "content-type": "text/plain; charset=utf-8"
+                }
+              }
+            );
+          }
+
+          return new Response("Fetch preview unavailable", {
+            status: 200,
+            headers: {
+              "content-type": "text/plain; charset=utf-8"
+            }
+          });
+        }
+
+        if (url.pathname === "/redirect") {
+          const next = url.searchParams.get("next") ?? "";
+          if (next.startsWith("https://cognexa-probe.invalid/")) {
+            return new Response("", {
+              status: 302,
+              headers: {
+                location: next
+              }
+            });
+          }
+
+          return new Response(JSON.stringify({ next }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json; charset=utf-8"
+            }
+          });
+        }
+
+        if (url.pathname === "/checkout") {
+          const step = url.searchParams.get("step") ?? "review";
+          const body =
+            step === "complete"
+              ? "<html><body>Order complete</body></html>"
+              : "<html><body>Review order</body></html>";
+          return new Response(body, {
+            status: 200,
+            headers: {
+              "content-type": "text/html; charset=utf-8"
+            }
+          });
+        }
+
+        if (url.pathname === "/oauth/authorize") {
+          const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+          if (redirectUri.startsWith("https://cognexa-oauth.invalid/")) {
+            return new Response("", {
+              status: 302,
+              headers: {
+                location: redirectUri
+              }
+            });
+          }
+
+          return new Response(
+            `<html><body>Authorize redirect_uri=${redirectUri}</body></html>`,
+            {
+              status: 200,
+              headers: {
+                "content-type": "text/html; charset=utf-8"
+              }
+            }
+          );
+        }
+
+        if (url.pathname === "/login") {
+          return new Response(
+            [
+              "<html><body>",
+              '<form method="post" action="/account/update">',
+              '<input type="email" name="email" />',
+              '<button type="submit">Save settings</button>',
+              "</form>",
+              '<a href="/oauth/authorize?client_id=web&response_type=code&redirect_uri=https://example.com/callback">Sign in with SSO</a>',
+              "</body></html>"
+            ].join(""),
+            {
+              status: 200,
+              headers: {
+                "content-type": "text/html; charset=utf-8",
+                "set-cookie": "session=abc; Path=/; HttpOnly"
+              }
+            }
+          );
+        }
+
+        if (url.pathname === "/robots.txt") {
+          return new Response("User-agent: *\nDisallow: /private", {
+            status: 200,
+            headers: {
+              "content-type": "text/plain; charset=utf-8"
+            }
+          });
+        }
+
+        if (url.pathname === "/health") {
+          return new Response("ok", {
+            status: 200,
+            headers: {
+              "content-type": "text/plain; charset=utf-8"
+            }
+          });
+        }
+
+        return new Response("<html><body>Home</body></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8"
+          }
+        });
+      }) as never,
+      now: () => new Date("2026-06-21T07:50:00.000Z")
+    }
+  );
+
+  const report = await service.runAuthorizedSecurityTest(createActor(), {
+    verificationId: verification.id as string,
+    url: "https://example.com",
+    modules: [
+      "ssrf",
+      "csrf",
+      "open_redirect",
+      "business_logic",
+      "oauth_flow"
+    ],
+    maxPages: 6,
+    maxRequests: 40
+  });
+
+  const categories = new Set(report.findings.map((finding) => finding.category));
+
+  assert.equal(report.status, "completed");
+  assert.equal(report.summary.requestsSent > 0, true);
+  assert.equal(categories.has("ssrf"), true);
+  assert.equal(categories.has("csrf"), true);
+  assert.equal(categories.has("open_redirect"), true);
+  assert.equal(categories.has("business_logic"), true);
+  assert.equal(categories.has("oauth_flow"), true);
+});
+
+test("AuthorizedSecurityTestingService treats client-rendered auth findings as a login surface", async () => {
+  const verificationRepository = createVerificationRepository();
+  const runRepository = createRunRepository();
+  const eventRepository = createEventRepository();
+  const scanResult = createScanResult();
+  scanResult.surface.totalForms = 0;
+  scanResult.surface.loginForms = 0;
+  scanResult.pages = scanResult.pages.filter((page) => !page.url.endsWith("/login"));
+  scanResult.findings = [
+    {
+      id: "forms-client-rendered-auth-flow",
+      severity: "info",
+      category: "forms",
+      title: "Client-rendered authentication flow detected",
+      summary:
+        "The root page appears to bootstrap a login flow from same-origin bundles instead of a static form.",
+      remediation:
+        "Expose a scanner-visible login descriptor or a stable login route for test environments.",
+      pageUrl: "https://example.com/",
+      evidence: ["bundle=/assets/main.js", "markers=login-route,credential-post"]
+    }
+  ];
+
+  const verification = await verificationRepository.create({
+    workspaceId: "workspace-1",
+    organizationId: "org-1",
+    requestedByUserId: "user-1",
+    hostname: "example.com",
+    method: "dns_txt",
+    status: "verified",
+    challengeToken: "token-6",
+    challengeDetails: {
+      requestedUrl: "https://example.com",
+      recordName: "_cognexa-security-test.example.com",
+      expectedValue: "cognexa-verification=token-6"
+    },
+    expiresAt: "2026-07-21T07:00:00.000Z",
+    verifiedAt: "2026-06-21T07:00:00.000Z"
+  } as never);
+
+  const service = new AuthorizedSecurityTestingService(
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "allow"
+      })
+    } as never,
+    {
+      scanWebsite: async () => scanResult
+    } as never,
+    {
+      createStructuredOutput: async () => {
+        throw new Error("LLM unavailable in test");
+      }
+    } as never,
+    verificationRepository as never,
+    runRepository as never,
+    eventRepository as never,
+    {
+      defaultProvider: "qwen",
+      defaultModel: "qwen2.5-coder",
+      lookupHost: (async () => [
+        {
+          address: "93.184.216.34",
+          family: 4
+        }
+      ]) as never,
+      fetchImpl: (async (input) => {
+        const url =
+          input instanceof URL
+            ? input.toString()
+            : typeof input === "string"
+              ? input
+              : input.url;
+
+        if (url === "https://example.com/" || url === "https://example.com") {
+          return new Response("<html><body>Corporate Banking</body></html>", {
+            status: 200,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              "set-cookie": "session=abc; Path=/; HttpOnly"
+            }
+          });
+        }
+
+        return new Response("<html><body>Home</body></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8"
+          }
+        });
+      }) as never,
+      now: () => new Date("2026-06-21T07:55:00.000Z")
+    }
+  );
+
+  const report = await service.runAuthorizedSecurityTest(createActor(), {
+    verificationId: verification.id as string,
+    url: "https://example.com",
+    modules: ["session_management"],
+    maxPages: 3,
+    maxRequests: 10
+  });
+
+  const sessionPriority = report.summary.prioritizedModules?.find(
+    (priority) => priority.module === "session_management"
+  );
+
+  assert.equal(report.status, "completed");
+  assert.equal(
+    report.findings.some(
+      (finding) =>
+        finding.category === "session_management" &&
+        finding.title ===
+          "Login-related response is missing clear anti-caching directives"
+    ),
+    true
+  );
+  assert.equal(
+    sessionPriority?.reasons.some((reason) =>
+      /login-related responses were discovered/i.test(reason)
+    ),
+    true
+  );
+});
+
+test("AuthorizedSecurityTestingService uses declared auth endpoint descriptors for baseline metadata and safe login probes", async () => {
+  const verificationRepository = createVerificationRepository();
+  const runRepository = createRunRepository();
+  const eventRepository = createEventRepository();
+  const scanResult = createScanResult();
+  scanResult.surface.totalForms = 0;
+  scanResult.surface.loginForms = 0;
+  scanResult.pages = scanResult.pages.filter((page) => !page.url.endsWith("/login"));
+  scanResult.findings = [];
+
+  const verification = await verificationRepository.create({
+    workspaceId: "workspace-1",
+    organizationId: "org-1",
+    requestedByUserId: "user-1",
+    hostname: "example.com",
+    method: "dns_txt",
+    status: "verified",
+    challengeToken: "token-7",
+    challengeDetails: {
+      requestedUrl: "https://example.com",
+      recordName: "_cognexa-security-test.example.com",
+      expectedValue: "cognexa-verification=token-7"
+    },
+    expiresAt: "2026-07-21T07:00:00.000Z",
+    verifiedAt: "2026-06-21T07:00:00.000Z"
+  } as never);
+
+  const service = new AuthorizedSecurityTestingService(
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "allow"
+      })
+    } as never,
+    {
+      scanWebsite: async () => scanResult
+    } as never,
+    {
+      createStructuredOutput: async () => {
+        throw new Error("LLM unavailable in test");
+      }
+    } as never,
+    verificationRepository as never,
+    runRepository as never,
+    eventRepository as never,
+    {
+      allowDevelopmentLocalTargets: true,
+      defaultProvider: "qwen",
+      defaultModel: "qwen2.5-coder",
+      lookupHost: (async () => [
+        {
+          address: "127.0.0.1",
+          family: 4
+        }
+      ]) as never,
+      fetchImpl: (async (input) => {
+        const url =
+          input instanceof URL
+            ? input.toString()
+            : typeof input === "string"
+              ? input
+              : input.url;
+
+        if (url === "http://localhost:3000/login") {
+          return new Response("<html><body>Login shell</body></html>", {
+            status: 200,
+            headers: {
+              "content-type": "text/html; charset=utf-8"
+            }
+          });
+        }
+
+        return new Response("<html><body>Home</body></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8"
+          }
+        });
+      }) as never,
+      now: () => new Date("2026-06-21T08:05:00.000Z"),
+      waitImpl: async () => undefined
+    }
+  );
+
+  const localVerification = await service.startDomainVerification(createActor(), {
+    target: "http://localhost:3000",
+    method: "dns_txt"
+  });
+
+  const report = await service.runAuthorizedSecurityTest(createActor(), {
+    verificationId: localVerification.id,
+    url: "http://localhost:3000",
+    modules: ["session_management"],
+    maxPages: 2,
+    maxRequests: 10,
+    authEndpointDescriptors: [
+      {
+        type: "auth_api",
+        name: "corporate-login",
+        entryUrl: "http://localhost:3000/login",
+        endpoint: "http://localhost:3000/api/login",
+        fields: ["corporateId", "userId", "password"],
+        tokenFields: ["mfsapiin"]
+      }
+    ],
+    manualFormValidation: {
+      rateLimitPerMinute: 5,
+      credentialLabels: ["qa-corporate-admin"],
+      notes: "Manual POST validation only."
+    }
+  });
+
+  assert.equal(report.status, "completed");
+  assert.equal(report.baseline.declaredAuthEndpoints.length, 1);
+  assert.equal(report.baseline.declaredAuthEndpoints[0]?.method, "POST");
+  assert.equal(report.baseline.manualFormValidation?.rateLimitPerMinute, 5);
+  assert.deepEqual(report.baseline.manualFormValidation?.credentialLabels, [
+    "qa-corporate-admin"
+  ]);
+  assert.equal(
+    report.events.some(
+      (event) =>
+        event.message ===
+        "Manual POST form validation metadata was registered for this run."
+    ),
+    true
+  );
+  assert.equal(
+    report.findings.some(
+      (finding) =>
+        finding.category === "session_management" &&
+        finding.title ===
+          "Login-related response is missing clear anti-caching directives"
+    ),
+    true
+  );
+});
+
 test("AuthorizedSecurityTestingService auto-verifies development local targets only when explicit local mode is enabled", async () => {
   const verificationRepository = createVerificationRepository();
   const runRepository = createRunRepository();
@@ -1564,4 +2165,92 @@ test("AuthorizedSecurityTestingService auto-verifies development local targets o
     report.guardrails[0]?.includes("Development local-target mode is active"),
     true
   );
+});
+
+test("AuthorizedSecurityTestingService schedules guarded probe rate limits without sleeping in tests", async () => {
+  const waitCalls: number[] = [];
+  const service = new AuthorizedSecurityTestingService(
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "allow"
+      })
+    } as never,
+    {
+      scanWebsite: async () => createScanResult()
+    } as never,
+    {
+      createStructuredOutput: async () => {
+        throw new Error("LLM should not be called in this scheduler test.");
+      }
+    } as never,
+    createVerificationRepository() as never,
+    createRunRepository() as never,
+    createEventRepository() as never,
+    {
+      waitImpl: async (delayMs) => {
+        waitCalls.push(delayMs);
+      }
+    }
+  );
+
+  const state = {
+    runId: "run-1",
+    workspaceId: "workspace-1",
+    requestedUrl: new URL("https://example.com"),
+    maxRequests: 3,
+    minProbeIntervalMs: 12_000,
+    requestsSent: 0,
+    moduleWarnings: [],
+    moduleConcurrency: 1,
+    probeCacheHits: 0,
+    probeCacheMisses: 0,
+    adaptiveBackoffCount: 0,
+    rateLimitedResponses: 0,
+    networkRequestsSent: 0,
+    probeCache: new Map(),
+    pendingProbeCache: new Map(),
+    requestReservationQueue: Promise.resolve(),
+    nextRateLimitedProbeAt: 0,
+    nextAllowedProbeAt: 0
+  };
+
+  const firstSlot = await (
+    service as unknown as {
+      reserveProbeSlot: (input: typeof state) => Promise<number | null>;
+    }
+  ).reserveProbeSlot(state);
+  const secondSlot = await (
+    service as unknown as {
+      reserveProbeSlot: (input: typeof state) => Promise<number | null>;
+    }
+  ).reserveProbeSlot(state);
+  const thirdSlot = await (
+    service as unknown as {
+      reserveProbeSlot: (input: typeof state) => Promise<number | null>;
+    }
+  ).reserveProbeSlot(state);
+  const exhaustedSlot = await (
+    service as unknown as {
+      reserveProbeSlot: (input: typeof state) => Promise<number | null>;
+    }
+  ).reserveProbeSlot(state);
+
+  assert.equal(firstSlot !== null, true);
+  assert.equal(secondSlot !== null, true);
+  assert.equal(thirdSlot !== null, true);
+  assert.equal(exhaustedSlot, null);
+  assert.equal((secondSlot ?? 0) >= (firstSlot ?? 0) + 12_000, true);
+  assert.equal((thirdSlot ?? 0) >= (secondSlot ?? 0) + 12_000, true);
+
+  await (
+    service as unknown as {
+      waitForProbeWindow: (input: typeof state, scheduledAt: number) => Promise<void>;
+    }
+  ).waitForProbeWindow(state, secondSlot ?? 0);
+
+  assert.equal(waitCalls.length, 1);
+  assert.equal(waitCalls[0]! > 0, true);
 });

@@ -18,18 +18,34 @@ const fortiGateAllowSelfSigned =
       : "false"
     : undefined);
 
+const optionalEnvValue = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value) => {
+    if (typeof value === "string" && value.trim() === "") {
+      return undefined;
+    }
+
+    return value;
+  }, schema.optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(5000),
   API_PREFIX: z.string().default("/api/v1"),
+  HTTPS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  HTTPS_KEY_FILE: optionalEnvValue(z.string().min(1)),
+  HTTPS_CERT_FILE: optionalEnvValue(z.string().min(1)),
+  HTTPS_CA_FILE: optionalEnvValue(z.string().min(1)),
   POSTGRES_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   JWT_SECRET: z.string().min(12),
   JWT_REFRESH_SECRET: z.string().min(12),
-  ENDPOINT_ENROLLMENT_TOKEN: z.string().min(16).optional(),
-  FORTIGATE_BASE_URL: z.string().url().optional(),
-  FORTIGATE_API_TOKEN: z.string().min(16).optional(),
-  FORTIGATE_VDOM: z.string().min(1).optional(),
+  ENDPOINT_ENROLLMENT_TOKEN: optionalEnvValue(z.string().min(16)),
+  FORTIGATE_BASE_URL: optionalEnvValue(z.string().url()),
+  FORTIGATE_API_TOKEN: optionalEnvValue(z.string().min(16)),
+  FORTIGATE_VDOM: optionalEnvValue(z.string().min(1)),
   FORTIGATE_ALLOW_SELF_SIGNED: z
     .enum(["true", "false"])
     .default("true")
@@ -53,7 +69,7 @@ const envSchema = z.object({
     .string()
     .url()
     .default("http://localhost:11434/v1"),
-  WEBSITE_SCANNER_BROWSER_PATH: z.string().min(1).optional(),
+  WEBSITE_SCANNER_BROWSER_PATH: optionalEnvValue(z.string().min(1)),
   DEFAULT_EMBEDDING_MODEL: z.string().default("nomic-embed-text"),
   QDRANT_URL: z.string().url().default("http://localhost:6333"),
   EMBEDDING_DIMENSION: z.coerce.number().int().positive().default(768),

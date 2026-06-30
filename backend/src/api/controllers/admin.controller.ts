@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 
 import { CanonicalUserRole } from "../../authorization/authorization.types";
 import { AdminService } from "../../services/admin/admin.service";
+import type { AuthorizedSecurityTestModule } from "../../services/authorized-testing/authorized-security-testing.types";
 import { ToolExecutionService } from "../../services/tool-execution/tool-execution.service";
 
 export class AdminController {
@@ -65,15 +66,23 @@ export class AdminController {
   };
 
   startDomainVerification = async (request: Request, response: Response) => {
-    const verification = await this.admin.startDomainVerification(request.auth!, {
+    const verificationInput = {
       target: request.body.target as string,
       method: request.body.method as
         | "dns_txt"
         | "http_file"
         | "html_meta"
         | undefined,
-      devModeBypass: request.body.devModeBypass as boolean | undefined
-    });
+      ...(request.body.devModeBypass !== undefined
+        ? {
+            devModeBypass: request.body.devModeBypass as boolean
+          }
+        : {})
+    };
+    const verification = await this.admin.startDomainVerification(
+      request.auth!,
+      verificationInput
+    );
     response.status(201).json({ verification });
   };
 
@@ -101,23 +110,12 @@ export class AdminController {
   };
 
   runAuthorizedSecurityTest = async (request: Request, response: Response) => {
-    const report = await this.admin.runAuthorizedSecurityTest(request.auth!, {
+    const runInput = {
       verificationId: request.body.verificationId as string | undefined,
       url: request.body.url as string,
       maxPages: request.body.maxPages as number | undefined,
       maxRequests: request.body.maxRequests as number | undefined,
-      devModeBypass: request.body.devModeBypass as boolean | undefined,
-      modules: request.body.modules as
-        | Array<
-            | "sql_injection"
-            | "xss"
-            | "authentication"
-            | "authorization"
-            | "api_security"
-            | "waf"
-            | "session_management"
-          >
-        | undefined,
+      modules: request.body.modules as AuthorizedSecurityTestModule[] | undefined,
       authProfiles: request.body.authProfiles as
         | Array<{
             name: string;
@@ -125,8 +123,38 @@ export class AdminController {
             headers?: Record<string, string>;
             cookies?: Record<string, string>;
           }>
-        | undefined
-    });
+        | undefined,
+      authEndpointDescriptors: request.body.authEndpointDescriptors as
+        | Array<{
+            type: "auth_api";
+            name: string;
+            entryUrl: string;
+            endpoint: string;
+            method?: "POST";
+            contentType?: string;
+            fields: string[];
+            tokenFields?: string[];
+            stagingOnly?: boolean;
+            productionMode?: "passive_only";
+          }>
+        | undefined,
+      manualFormValidation: request.body.manualFormValidation as
+        | {
+            rateLimitPerMinute?: number;
+            credentialLabels?: string[];
+            notes?: string;
+          }
+        | undefined,
+      ...(request.body.devModeBypass !== undefined
+        ? {
+            devModeBypass: request.body.devModeBypass as boolean
+          }
+        : {})
+    };
+    const report = await this.admin.runAuthorizedSecurityTest(
+      request.auth!,
+      runInput
+    );
     response.status(201).json(report);
   };
 
@@ -145,5 +173,56 @@ export class AdminController {
       limit
     );
     response.json({ runs });
+  };
+
+  getPrivateModeConfig = async (request: Request, response: Response) => {
+    const config = await this.admin.getPrivateModeConfig(request.auth!);
+    response.json({ config });
+  };
+
+  updatePrivateModeConfig = async (request: Request, response: Response) => {
+    const config = await this.admin.updatePrivateModeConfig(request.auth!, request.body);
+    response.json({ config });
+  };
+
+  activatePrivateMode = async (request: Request, response: Response) => {
+    const session = await this.admin.activatePrivateMode(request.auth!, request.body);
+    response.status(201).json({ session });
+  };
+
+  deactivatePrivateMode = async (request: Request, response: Response) => {
+    await this.admin.deactivatePrivateMode(
+      request.auth!,
+      request.body.sessionId as string | undefined
+    );
+    response.status(204).send();
+  };
+
+  getPrivateModeSession = async (request: Request, response: Response) => {
+    response.json(await this.admin.getPrivateModeSessionState(request.auth!));
+  };
+
+  verifyPrivateMode = async (request: Request, response: Response) => {
+    const verification = await this.admin.verifyPrivateMode(request.auth!);
+    response.json({ verification });
+  };
+
+  leakTestPrivateMode = async (request: Request, response: Response) => {
+    const leakTest = await this.admin.runPrivateModeLeakTest(request.auth!);
+    response.json({ leakTest });
+  };
+
+  rotatePrivateModeCircuit = async (request: Request, response: Response) => {
+    const circuit = await this.admin.rotatePrivateModeCircuit(
+      request.auth!,
+      request.body.sessionId as string | undefined
+    );
+    response.json({ circuit });
+  };
+
+  listPrivateModeExitLogs = async (request: Request, response: Response) => {
+    const { limit } = request.query as unknown as { limit?: number };
+    const logs = await this.admin.listPrivateModeExitLogs(request.auth!, limit);
+    response.json({ logs });
   };
 }

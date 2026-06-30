@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -15,17 +16,23 @@ import {
 
 import {
   checkDomainOwnershipVerification,
+  getPrivateModeSession,
   getAuthorizedTestingDevModeStatus,
   getAuthorizedSecurityTestRun,
+  listAdvancedPenetrationTestRuns,
   listAuthorizedSecurityTestRuns,
   listDomainOwnershipVerifications,
   runAuthorizedSecurityTest,
+  streamAdvancedPenetrationTest,
   startDomainOwnershipVerification
 } from "@/lib/api";
 import {
+  AdvancedPenetrationTestRunSummary,
   AuthorizedTestingDevModeStatus,
   AuthorizedApiVulnerabilityType,
   AuthorizedSecurityAdaptationUrgency,
+  AuthorizedSecurityManualFormValidationInput,
+  AuthorizedSecurityTestAuthEndpointDescriptorInput,
   AuthorizedSecurityFindingDisposition,
   AuthorizedSecurityFindingSeverity,
   AuthorizedSecurityTestModule,
@@ -45,9 +52,14 @@ import { DevModeBypassToggle } from "@/components/admin/DevModeBypassToggle";
 const MODULES: AuthorizedSecurityTestModule[] = [
   "sql_injection",
   "xss",
+  "csrf",
   "authentication",
   "authorization",
   "api_security",
+  "ssrf",
+  "open_redirect",
+  "business_logic",
+  "oauth_flow",
   "waf",
   "session_management"
 ];
@@ -102,6 +114,14 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   }
 
   return Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function readStringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function verificationStatusClass(status: DomainOwnershipVerificationStatus) {
@@ -168,16 +188,59 @@ function matchesAllowedDevHostname(hostname: string, patterns: string[]) {
   });
 }
 
-function runStatusClass(status: AuthorizedSecurityTestRunStatus) {
+function runStatusClass(status: AuthorizedSecurityTestRunStatus | "queued") {
   switch (status) {
     case "completed":
       return "border-emerald-200 bg-emerald-50 text-emerald-700";
     case "running":
       return "border-amber-200 bg-amber-50 text-amber-700";
+    case "queued":
     case "planned":
       return "border-sky-200 bg-sky-50 text-sky-700";
     default:
       return "border-red-200 bg-red-50 text-red-700";
+  }
+}
+
+function advancedRunStatusLabel(
+  status: AdvancedPenetrationTestRunSummary["status"]
+) {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "completed":
+      return "Completed";
+    default:
+      return "Failed";
+  }
+}
+
+function advancedEventTypeLabel(type: string) {
+  switch (type) {
+    case "status":
+      return "Status";
+    case "phase":
+      return "Phase";
+    case "finding":
+      return "Finding";
+    case "decision":
+      return "Decision";
+    case "evidence":
+      return "Evidence";
+    case "attack":
+      return "Attack";
+    case "report":
+      return "Report";
+    case "audit":
+      return "Audit";
+    case "error":
+      return "Error";
+    case "complete":
+      return "Complete";
+    default:
+      return "Update";
   }
 }
 
@@ -323,6 +386,75 @@ function parseAuthProfilePayload(
   };
 }
 
+function parseAuthEndpointDescriptorPayload(
+  raw: string,
+  messages: {
+    arrayRequired: string;
+    objectRequired: string;
+    stringArrayRequired: string;
+    requiredFieldError: string;
+  }
+): AuthorizedSecurityTestAuthEndpointDescriptorInput[] {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error(messages.arrayRequired);
+  }
+
+  return parsed.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new Error(messages.objectRequired);
+    }
+
+    const name = readStringValue(entry.name);
+    const entryUrl = readStringValue(entry.entryUrl);
+    const endpoint = readStringValue(entry.endpoint);
+
+    if (!name || !entryUrl || !endpoint || !isStringArray(entry.fields)) {
+      throw new Error(messages.requiredFieldError);
+    }
+
+    if (
+      entry.tokenFields !== undefined &&
+      !isStringArray(entry.tokenFields)
+    ) {
+      throw new Error(messages.stringArrayRequired);
+    }
+
+    const fields = entry.fields.map((field) => field.trim()).filter(Boolean);
+    if (fields.length === 0) {
+      throw new Error(messages.requiredFieldError);
+    }
+
+    return {
+      type: "auth_api",
+      name,
+      entryUrl,
+      endpoint,
+      method: entry.method === "POST" ? "POST" : undefined,
+      contentType: readStringValue(entry.contentType) ?? undefined,
+      fields,
+      tokenFields:
+        entry.tokenFields?.map((field) => field.trim()).filter(Boolean) ??
+        undefined,
+      stagingOnly:
+        typeof entry.stagingOnly === "boolean" ? entry.stagingOnly : undefined,
+      productionMode:
+        entry.productionMode === "passive_only"
+          ? "passive_only"
+          : undefined
+      };
+  });
+}
+
+function parseManualCredentialLabels(raw: string): string[] {
+  return [...new Set(raw.split(/[\r\n,]+/).map((label) => label.trim()).filter(Boolean))];
+}
+
 export function AuthorizedSecurityTestingConsole() {
   const router = useRouter();
   const { formatDateTime, formatNumber, t } = useI18n();
@@ -345,23 +477,62 @@ export function AuthorizedSecurityTestingConsole() {
   const [includeAuthProfiles, setIncludeAuthProfiles] = useState(false);
   const [lowPrivilegeProfile, setLowPrivilegeProfile] = useState("");
   const [highPrivilegeProfile, setHighPrivilegeProfile] = useState("");
+  const [authEndpointDescriptorPayload, setAuthEndpointDescriptorPayload] =
+    useState("");
+  const [manualFormValidationEnabled, setManualFormValidationEnabled] =
+    useState(false);
+  const [manualFormRateLimitPerMinute, setManualFormRateLimitPerMinute] =
+    useState(5);
+  const [manualFormCredentialLabels, setManualFormCredentialLabels] =
+    useState("");
+  const [manualFormNotes, setManualFormNotes] = useState("");
 
   const [runs, setRuns] = useState<AuthorizedSecurityTestRunSummary[]>([]);
+  const [advancedRuns, setAdvancedRuns] = useState<
+    AdvancedPenetrationTestRunSummary[]
+  >([]);
   const [report, setReport] = useState<AuthorizedSecurityTestReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [privateModeActive, setPrivateModeActive] = useState<boolean | null>(null);
+  const [privateModeReady, setPrivateModeReady] = useState<boolean | null>(null);
+  const [privateModeVerificationError, setPrivateModeVerificationError] = useState<
+    string | null
+  >(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isCreatingVerification, setIsCreatingVerification] = useState(false);
   const [checkingVerificationId, setCheckingVerificationId] = useState<string | null>(
     null
   );
   const [isRunning, setIsRunning] = useState(false);
+  const [isAdvancedRunning, setIsAdvancedRunning] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
+  const [loadingAdvancedRunId, setLoadingAdvancedRunId] = useState<string | null>(
+    null
+  );
+  const [advancedStreamRunId, setAdvancedStreamRunId] = useState<string | null>(null);
+  const [advancedStreamStatus, setAdvancedStreamStatus] = useState<
+    AdvancedPenetrationTestRunSummary["status"] | null
+  >(null);
+  const [advancedStreamSummary, setAdvancedStreamSummary] = useState<string | null>(
+    null
+  );
+  const [advancedStreamEvents, setAdvancedStreamEvents] = useState<
+    Array<{
+      id: string;
+      type: string;
+      phase: string;
+      message: string;
+      timestamp: string;
+    }>
+  >([]);
   const isBusy =
     isRefreshing ||
     isCreatingVerification ||
     isRunning ||
+    isAdvancedRunning ||
     checkingVerificationId !== null ||
-    loadingRunId !== null;
+    loadingRunId !== null ||
+    loadingAdvancedRunId !== null;
 
   const selectedVerification = useMemo(
     () =>
@@ -400,6 +571,14 @@ export function AuthorizedSecurityTestingConsole() {
   const shouldUseImplicitDevelopmentVerification =
     implicitDevelopmentRunReady && !canRunSelectedVerification;
   const canRunRequest = canRunSelectedVerification || implicitDevelopmentRunReady;
+  const privateModeBlockedMessage =
+    privateModeActive === true
+      ? t("privateMode.verifiedRequiredForSecurityModules")
+      : t("privateMode.requiredForSecurityModules");
+  const privateModeActionMessage =
+    privateModeActive === true
+      ? t("privateMode.verifyBeforeSecurityTools")
+      : t("privateMode.activateBeforeSecurityTools");
 
   useEffect(() => {
     void loadActivity();
@@ -416,14 +595,26 @@ export function AuthorizedSecurityTestingConsole() {
     setError(null);
 
     try {
-      const [verificationItems, runItems, nextDevModeStatus] = await Promise.all([
+      const [
+        verificationItems,
+        runItems,
+        advancedRunItems,
+        nextDevModeStatus,
+        privateModeState
+      ] = await Promise.all([
         listDomainOwnershipVerifications(),
         listAuthorizedSecurityTestRuns(),
-        getAuthorizedTestingDevModeStatus()
+        listAdvancedPenetrationTestRuns(),
+        getAuthorizedTestingDevModeStatus(),
+        getPrivateModeSession()
       ]);
       setVerifications(verificationItems);
       setRuns(runItems);
+      setAdvancedRuns(advancedRunItems);
       setDevModeStatus(nextDevModeStatus);
+      setPrivateModeActive(Boolean(privateModeState.session));
+      setPrivateModeReady(privateModeState.routeVerified);
+      setPrivateModeVerificationError(privateModeState.verificationError);
 
       if (!nextDevModeStatus.available) {
         setUseDevModeBypass(false);
@@ -456,6 +647,11 @@ export function AuthorizedSecurityTestingConsole() {
 
   async function handleCreateVerification() {
     const target = normalizeTarget(verificationTarget);
+
+    if (privateModeReady !== true) {
+      setError(privateModeBlockedMessage);
+      return;
+    }
 
     if (!target) {
       setError(t("authorizedTesting.targetRequired"));
@@ -490,6 +686,11 @@ export function AuthorizedSecurityTestingConsole() {
   }
 
   async function handleCheckVerification(verificationId: string) {
+    if (privateModeReady !== true) {
+      setError(privateModeBlockedMessage);
+      return;
+    }
+
     setCheckingVerificationId(verificationId);
     setError(null);
 
@@ -537,8 +738,108 @@ export function AuthorizedSecurityTestingConsole() {
     }
   }
 
+  async function handleLoadAdvancedRun(runId: string) {
+    setLoadingAdvancedRunId(runId);
+    setError(null);
+
+    try {
+      router.push(`/admin/authorized-testing/advanced-runs/${runId}`);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Failed to load the advanced penetration test run."
+      );
+    } finally {
+      setLoadingAdvancedRunId(null);
+    }
+  }
+
+  function buildAuthProfiles() {
+    const authProfiles: NonNullable<
+      Parameters<typeof streamAdvancedPenetrationTest>[0]["authProfiles"]
+    > = [];
+    const profileErrorMessages = {
+      objectRequired: t("authorizedTesting.profileJsonObjectError"),
+      stringMapRequired: t("authorizedTesting.profileJsonStringMapError")
+    };
+
+    if (includeAuthProfiles) {
+      const lowProfile = parseAuthProfilePayload(
+        lowPrivilegeProfile,
+        profileErrorMessages
+      );
+      if (lowProfile) {
+        authProfiles.push({
+          name: "low-privilege",
+          role: "low_privilege" as const,
+          ...lowProfile
+        });
+      }
+
+      const highProfile = parseAuthProfilePayload(
+        highPrivilegeProfile,
+        profileErrorMessages
+      );
+      if (highProfile) {
+        authProfiles.push({
+          name: "high-privilege",
+          role: "high_privilege" as const,
+          ...highProfile
+        });
+      }
+    }
+
+    return authProfiles;
+  }
+
+  function buildAuthEndpointDescriptors() {
+    return parseAuthEndpointDescriptorPayload(authEndpointDescriptorPayload, {
+      arrayRequired: t("authorizedTesting.authEndpointDescriptorArrayError"),
+      objectRequired: t("authorizedTesting.authEndpointDescriptorObjectError"),
+      stringArrayRequired: t(
+        "authorizedTesting.authEndpointDescriptorStringArrayError"
+      ),
+      requiredFieldError: t(
+        "authorizedTesting.authEndpointDescriptorRequiredFieldError"
+      )
+    });
+  }
+
+  function buildManualFormValidation():
+    | AuthorizedSecurityManualFormValidationInput
+    | undefined {
+    if (!manualFormValidationEnabled) {
+      return undefined;
+    }
+
+    const credentialLabels = parseManualCredentialLabels(
+      manualFormCredentialLabels
+    );
+    if (credentialLabels.length === 0) {
+      throw new Error(t("authorizedTesting.manualFormValidationCredentialRequired"));
+    }
+
+    const normalizedRateLimit = Math.max(
+      1,
+      Math.min(60, Math.trunc(manualFormRateLimitPerMinute || 5))
+    );
+    const notes = manualFormNotes.trim();
+
+    return {
+      rateLimitPerMinute: normalizedRateLimit,
+      credentialLabels,
+      ...(notes ? { notes } : {})
+    };
+  }
+
   async function handleRun() {
     const target = normalizeTarget(runTarget);
+
+    if (privateModeReady !== true) {
+      setError(privateModeBlockedMessage);
+      return;
+    }
 
     if (!canRunSelectedVerification && !implicitDevelopmentRunReady) {
       setError(t("authorizedTesting.verificationSelectionRequired"));
@@ -559,38 +860,14 @@ export function AuthorizedSecurityTestingConsole() {
     setError(null);
 
     try {
-      const authProfiles = [];
-      const profileErrorMessages = {
-        objectRequired: t("authorizedTesting.profileJsonObjectError"),
-        stringMapRequired: t("authorizedTesting.profileJsonStringMapError")
-      };
-
-      if (includeAuthProfiles) {
-        const lowProfile = parseAuthProfilePayload(
-          lowPrivilegeProfile,
-          profileErrorMessages
+      const authProfiles = buildAuthProfiles();
+      const authEndpointDescriptors = buildAuthEndpointDescriptors();
+      const manualFormValidation = buildManualFormValidation();
+      if (manualFormValidation && authEndpointDescriptors.length === 0) {
+        throw new Error(
+          "Add at least one declared auth endpoint before enabling manual POST form validation."
         );
-        if (lowProfile) {
-          authProfiles.push({
-            name: "low-privilege",
-            role: "low_privilege" as const,
-            ...lowProfile
-          });
-        }
-
-        const highProfile = parseAuthProfilePayload(
-          highPrivilegeProfile,
-          profileErrorMessages
-        );
-        if (highProfile) {
-          authProfiles.push({
-            name: "high-privilege",
-            role: "high_privilege" as const,
-            ...highProfile
-          });
-        }
       }
-
       const nextReport = await runAuthorizedSecurityTest({
         verificationId: shouldUseImplicitDevelopmentVerification
           ? undefined
@@ -600,7 +877,9 @@ export function AuthorizedSecurityTestingConsole() {
         maxRequests,
         devModeBypass: useDevModeBypass,
         modules: selectedModules,
-        authProfiles
+        authProfiles,
+        authEndpointDescriptors,
+        manualFormValidation
       });
       setReport(nextReport);
       const nextRuns = await listAuthorizedSecurityTestRuns();
@@ -612,6 +891,162 @@ export function AuthorizedSecurityTestingConsole() {
       );
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function handleAdvancedRun() {
+    const target = normalizeTarget(runTarget);
+
+    if (privateModeReady !== true) {
+      setError(privateModeBlockedMessage);
+      return;
+    }
+
+    if (!selectedVerificationId || selectedVerification?.status !== "verified") {
+      setError(
+        "Advanced AI penetration tests require an explicit verified ownership challenge."
+      );
+      return;
+    }
+
+    if (!target) {
+      setError(t("authorizedTesting.targetRequired"));
+      return;
+    }
+
+    setIsAdvancedRunning(true);
+    setError(null);
+    setAdvancedStreamRunId(null);
+    setAdvancedStreamStatus("queued");
+    setAdvancedStreamSummary("Preparing the orchestrator and validating guardrails.");
+    setAdvancedStreamEvents([]);
+
+    let completedRunId: string | null = null;
+
+    try {
+      const authProfiles = buildAuthProfiles();
+      const authEndpointDescriptors = buildAuthEndpointDescriptors();
+      const manualFormValidation = buildManualFormValidation();
+      if (manualFormValidation && authEndpointDescriptors.length === 0) {
+        throw new Error(
+          "Add at least one declared auth endpoint before enabling manual POST form validation."
+        );
+      }
+      await streamAdvancedPenetrationTest({
+        target,
+        verificationId: selectedVerificationId,
+        maxPages,
+        maxRequests,
+        authProfiles,
+        authEndpointDescriptors,
+        manualFormValidation,
+        onEvent: (eventName, payload) => {
+          if (!isRecord(payload)) {
+            return;
+          }
+
+          if (eventName === "started") {
+            const runId = readStringValue(payload.runId);
+            const message =
+              readStringValue(payload.message) ??
+              "Advanced AI penetration test started.";
+
+            if (runId) {
+              setAdvancedStreamRunId(runId);
+            }
+            setAdvancedStreamStatus("running");
+            setAdvancedStreamSummary(message);
+            setAdvancedStreamEvents((current) => [
+              {
+                id: runId ?? `started-${Date.now()}`,
+                type: "status",
+                phase: "recon",
+                message,
+                timestamp:
+                  readStringValue(payload.timestamp) ?? new Date().toISOString()
+              },
+              ...current
+            ]);
+            return;
+          }
+
+          if (eventName === "update") {
+            const phase = readStringValue(payload.phase) ?? "run";
+            const type = readStringValue(payload.type) ?? "update";
+            const message =
+              readStringValue(payload.message) ?? "Advanced run update received.";
+            const timestamp =
+              readStringValue(payload.timestamp) ?? new Date().toISOString();
+            const runId = readStringValue(payload.runId);
+
+            if (runId) {
+              setAdvancedStreamRunId(runId);
+            }
+
+            setAdvancedStreamStatus("running");
+            setAdvancedStreamSummary(message);
+            setAdvancedStreamEvents((current) => [
+              {
+                id:
+                  readStringValue(payload.id) ??
+                  `${type}-${timestamp}-${current.length}`,
+                type,
+                phase,
+                message,
+                timestamp
+              },
+              ...current
+            ].slice(0, 14));
+            return;
+          }
+
+          if (eventName === "finished") {
+            const run = isRecord(payload.run) ? payload.run : null;
+            const runId =
+              readStringValue(run?.runId) ?? readStringValue(payload.runId);
+            completedRunId = runId;
+            if (runId) {
+              setAdvancedStreamRunId(runId);
+            }
+            setAdvancedStreamStatus("completed");
+            setAdvancedStreamSummary(
+              readStringValue(payload.message) ??
+                "Advanced AI penetration test completed."
+            );
+            return;
+          }
+
+          if (eventName === "error") {
+            setAdvancedStreamStatus("failed");
+            setAdvancedStreamSummary(
+              readStringValue(payload.error) ??
+                "Advanced AI penetration test failed."
+            );
+          }
+        }
+      });
+
+      const nextAdvancedRuns = await listAdvancedPenetrationTestRuns();
+      setAdvancedRuns(nextAdvancedRuns);
+
+      if (completedRunId) {
+        router.push(`/admin/authorized-testing/advanced-runs/${completedRunId}`);
+      }
+    } catch (runError) {
+      setError(
+        runError instanceof Error
+          ? runError.message
+          : "Advanced AI penetration test failed."
+      );
+
+      try {
+        const nextAdvancedRuns = await listAdvancedPenetrationTestRuns();
+        setAdvancedRuns(nextAdvancedRuns);
+      } catch {
+        // Keep the latest visible state if the refresh fails.
+      }
+    } finally {
+      setIsAdvancedRunning(false);
     }
   }
 
@@ -627,7 +1062,12 @@ export function AuthorizedSecurityTestingConsole() {
     setUseDevModeBypass(canUseDevModeBypass);
     setLowPrivilegeProfile("");
     setHighPrivilegeProfile("");
+    setAuthEndpointDescriptorPayload("");
     setReport(null);
+    setAdvancedStreamRunId(null);
+    setAdvancedStreamStatus(null);
+    setAdvancedStreamSummary(null);
+    setAdvancedStreamEvents([]);
     setError(null);
   }
 
@@ -662,6 +1102,25 @@ export function AuthorizedSecurityTestingConsole() {
           </p>
         </div>
       </div>
+
+      {privateModeReady === false ? (
+        <div className="rounded-[22px] border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-800">
+          <p className="font-semibold text-red-900">
+            {privateModeBlockedMessage}
+          </p>
+          <p className="mt-2 leading-6">
+            {privateModeActionMessage}{" "}
+            <Link href="/admin/private-mode" className="font-semibold underline">
+              {t("privateMode.openConsole")}
+            </Link>
+          </p>
+          {privateModeVerificationError ? (
+            <p className="mt-2 leading-6 text-red-700">
+              {privateModeVerificationError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-[22px] border border-[#1a78cf]/12 bg-[linear-gradient(135deg,rgba(21,167,243,0.10)_0%,rgba(13,123,213,0.04)_100%)] p-4">
@@ -857,7 +1316,7 @@ export function AuthorizedSecurityTestingConsole() {
                 onClick={() => {
                   void handleCreateVerification();
                 }}
-                disabled={isCreatingVerification}
+                disabled={isCreatingVerification || privateModeReady !== true}
                 className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-4 py-3 text-sm font-semibold text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
               >
                 <ClipboardCheck className="size-4" />
@@ -1032,6 +1491,11 @@ export function AuthorizedSecurityTestingConsole() {
                   );
                 })}
               </div>
+              <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                The module checklist only applies to the bounded validator. The
+                advanced AI path plans its own read-only chain from reconnaissance,
+                findings, and the remaining request budget.
+              </p>
             </div>
 
             <div className="mt-5 rounded-[22px] border border-black/6 bg-white p-4">
@@ -1076,6 +1540,94 @@ export function AuthorizedSecurityTestingConsole() {
               ) : null}
             </div>
 
+            <div className="mt-5 rounded-[22px] border border-black/6 bg-white p-4">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                {t("authorizedTesting.authEndpointDescriptors")}
+              </p>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {t("authorizedTesting.authEndpointDescriptorDescription")}
+              </p>
+              <textarea
+                value={authEndpointDescriptorPayload}
+                onChange={(event) =>
+                  setAuthEndpointDescriptorPayload(event.target.value)
+                }
+                placeholder={t(
+                  "authorizedTesting.authEndpointDescriptorPlaceholder"
+                )}
+                className="mt-4 min-h-40 w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 font-mono text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35"
+              />
+            </div>
+
+            <div className="mt-5 rounded-[22px] border border-black/6 bg-white p-4">
+              <label className="flex items-center gap-3 text-sm font-semibold text-[var(--text-primary)]">
+                <input
+                  type="checkbox"
+                  checked={manualFormValidationEnabled}
+                  onChange={(event) =>
+                    setManualFormValidationEnabled(event.target.checked)
+                  }
+                  className="size-4 rounded border-black/15"
+                />
+                {t("authorizedTesting.manualFormValidation")}
+              </label>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {t("authorizedTesting.manualFormValidationDescription")}
+              </p>
+
+              {manualFormValidationEnabled ? (
+                <div className="mt-4 grid gap-4">
+                  <label className="block sm:max-w-xs">
+                    <span className="text-xs font-semibold uppercase tracking-[0.22em] text-black/50">
+                      {t("authorizedTesting.manualFormValidationRateLimit")}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={60}
+                      value={manualFormRateLimitPerMinute}
+                      onChange={(event) =>
+                        setManualFormRateLimitPerMinute(
+                          Number(event.target.value) || 1
+                        )
+                      }
+                      className="mt-2 w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase tracking-[0.22em] text-black/50">
+                      {t(
+                        "authorizedTesting.manualFormValidationCredentialLabels"
+                      )}
+                    </span>
+                    <textarea
+                      value={manualFormCredentialLabels}
+                      onChange={(event) =>
+                        setManualFormCredentialLabels(event.target.value)
+                      }
+                      placeholder={t(
+                        "authorizedTesting.manualFormValidationCredentialPlaceholder"
+                      )}
+                      className="mt-2 min-h-28 w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 font-mono text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase tracking-[0.22em] text-black/50">
+                      {t("authorizedTesting.manualFormValidationNotes")}
+                    </span>
+                    <textarea
+                      value={manualFormNotes}
+                      onChange={(event) => setManualFormNotes(event.target.value)}
+                      placeholder={t(
+                        "authorizedTesting.manualFormValidationNotesPlaceholder"
+                      )}
+                      className="mt-2 min-h-24 w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35"
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-[var(--text-secondary)]">
                 {selectedVerification?.status === "verified" ? (
@@ -1108,17 +1660,37 @@ export function AuthorizedSecurityTestingConsole() {
                   <span>{t("authorizedTesting.verificationRequiredHint")}</span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  void handleRun();
-                }}
-                disabled={isRunning || !canRunRequest}
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-5 py-3 text-sm font-semibold text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
-              >
-                <FlaskConical className="size-4" />
-                {isRunning ? t("authorizedTesting.running") : t("authorizedTesting.run")}
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleAdvancedRun();
+                  }}
+                  disabled={
+                    isAdvancedRunning ||
+                    !selectedVerificationId ||
+                    selectedVerification?.status !== "verified" ||
+                    privateModeReady !== true
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-5 py-3 text-sm font-semibold text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  <ShieldAlert className="size-4" />
+                  {isAdvancedRunning
+                    ? "Running advanced AI test..."
+                    : "Run advanced AI test"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleRun();
+                  }}
+                  disabled={isRunning || !canRunRequest || privateModeReady !== true}
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  <FlaskConical className="size-4" />
+                  {isRunning ? t("authorizedTesting.running") : "Run bounded validator"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1181,7 +1753,10 @@ export function AuthorizedSecurityTestingConsole() {
                         onClick={() => {
                           void handleCheckVerification(verification.id);
                         }}
-                        disabled={checkingVerificationId === verification.id}
+                        disabled={
+                          checkingVerificationId === verification.id ||
+                          privateModeReady !== true
+                        }
                         className="rounded-full border border-black/10 bg-white px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:opacity-55"
                       >
                         {checkingVerificationId === verification.id
@@ -1190,6 +1765,51 @@ export function AuthorizedSecurityTestingConsole() {
                       </button>
                     </div>
                   </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-[24px] border border-black/6 bg-[var(--surface-soft)] p-5">
+            <p className="text-xs uppercase tracking-[0.22em] text-black/45">
+              Advanced AI runs
+            </p>
+            <div className="mt-4 space-y-3">
+              {advancedRuns.length === 0 ? (
+                <div className="rounded-[20px] border border-dashed border-black/10 bg-white px-4 py-5 text-sm text-[var(--text-secondary)]">
+                  No advanced orchestrated runs have been recorded yet.
+                </div>
+              ) : (
+                advancedRuns.map((run) => (
+                  <button
+                    key={run.runId}
+                    type="button"
+                    onClick={() => {
+                      void handleLoadAdvancedRun(run.runId);
+                    }}
+                    className="w-full rounded-[20px] border border-black/6 bg-white p-4 text-left transition hover:border-black/12 hover:bg-black/[0.015]"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge className={runStatusClass(run.status)}>
+                        {advancedRunStatusLabel(run.status)}
+                      </Badge>
+                      <Badge>{formatNumber(run.vulnerabilities)} vulns</Badge>
+                      <Badge>{formatNumber(run.attackChains)} chains</Badge>
+                    </div>
+                    <p className="mt-3 text-base font-semibold text-[var(--text-primary)]">
+                      {run.target}
+                    </p>
+                    {run.finalSummary ? (
+                      <p className="mt-2 line-clamp-2 text-sm leading-6 text-[var(--text-secondary)]">
+                        {run.finalSummary}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 text-sm text-[var(--text-secondary)]">
+                      {loadingAdvancedRunId === run.runId
+                        ? "Loading advanced run..."
+                        : formatDateTime(run.updatedAt)}
+                    </div>
+                  </button>
                 ))
               )}
             </div>
@@ -1252,6 +1872,59 @@ export function AuthorizedSecurityTestingConsole() {
           </div>
         </div>
       </div>
+
+      {advancedStreamRunId || advancedStreamSummary || advancedStreamEvents.length > 0 ? (
+        <div className="rounded-[24px] border border-black/6 bg-[var(--surface-soft)] p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-black/45">
+                Advanced AI run activity
+              </p>
+              <h3 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                Orchestrated penetration test stream
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {advancedStreamSummary ??
+                  "The orchestrator will publish recon, planning, execution, and reporting events here."}
+              </p>
+            </div>
+            {advancedStreamRunId ? (
+              <Badge
+                className={runStatusClass(
+                  advancedStreamStatus ?? (isAdvancedRunning ? "running" : "queued")
+                )}
+              >
+                {advancedStreamRunId}
+              </Badge>
+            ) : null}
+          </div>
+          <div className="mt-4 space-y-3">
+            {advancedStreamEvents.length === 0 ? (
+              <div className="rounded-[20px] border border-dashed border-black/10 bg-white px-4 py-5 text-sm text-[var(--text-secondary)]">
+                Waiting for the first orchestrator event.
+              </div>
+            ) : (
+              advancedStreamEvents.map((event) => (
+                <div
+                  key={event.id}
+                  className="rounded-[20px] border border-black/6 bg-white p-4"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge>{advancedEventTypeLabel(event.type)}</Badge>
+                    <Badge>{event.phase}</Badge>
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                    {event.message}
+                  </p>
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    {formatDateTime(event.timestamp)}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
 
       {!report ? (
         <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-5 text-sm text-[var(--text-secondary)]">
@@ -1364,6 +2037,64 @@ export function AuthorizedSecurityTestingConsole() {
                     {report.ownership.hostname}
                   </p>
                 </div>
+                {report.baseline.declaredAuthEndpoints.length > 0 ? (
+                  <div className="mt-4 border-t border-black/6 pt-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+                      {t("authorizedTesting.declaredAuthEndpoints")}
+                    </p>
+                    <div className="mt-3 space-y-3">
+                      {report.baseline.declaredAuthEndpoints.map((descriptor) => (
+                        <div
+                          key={`${descriptor.name}-${descriptor.endpoint}`}
+                          className="rounded-[18px] border border-black/6 bg-white px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]"
+                        >
+                          <p className="font-semibold text-[var(--text-primary)]">
+                            {descriptor.name}
+                          </p>
+                          <p>
+                            {t("authorizedTesting.entryUrl")}: {descriptor.entryUrl}
+                          </p>
+                          <p>
+                            {t("authorizedTesting.endpoint")}: {descriptor.endpoint}
+                          </p>
+                          <p>
+                            {t("authorizedTesting.httpMethod")}: {descriptor.method}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {report.baseline.manualFormValidation ? (
+                  <div className="mt-4 border-t border-black/6 pt-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]">
+                      {t("authorizedTesting.manualFormValidation")}
+                    </p>
+                    <div className="mt-3 rounded-[18px] border border-black/6 bg-white px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                      <p>
+                        {t("authorizedTesting.manualFormValidationRateLimit")}:{" "}
+                        {formatNumber(
+                          report.baseline.manualFormValidation.rateLimitPerMinute
+                        )}
+                      </p>
+                      <p>
+                        {t(
+                          "authorizedTesting.manualFormValidationCredentialLabels"
+                        )}
+                        :{" "}
+                        {report.baseline.manualFormValidation.credentialLabels.join(
+                          ", "
+                        )}
+                      </p>
+                      {report.baseline.manualFormValidation.notes ? (
+                        <p>
+                          {t("authorizedTesting.manualFormValidationNotes")}:{" "}
+                          {report.baseline.manualFormValidation.notes}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">

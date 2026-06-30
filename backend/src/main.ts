@@ -1,5 +1,8 @@
-import type { Server } from "http";
-import type { IncomingMessage } from "http";
+import { createServer as createHttpServer, type IncomingMessage } from "http";
+import type { Server as HttpServer } from "http";
+import { readFileSync } from "fs";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "https";
+import { resolve } from "path";
 
 import { createApp } from "./app";
 import { createAppContext } from "./bootstrap/create-app-context";
@@ -13,12 +16,14 @@ async function bootstrap(): Promise<void> {
   const wss = new WebSocketServer({
     noServer: true
   });
+  const server = createHttpListener(app, context.logger);
 
-  const server = app.listen(env.PORT, () => {
+  server.listen(env.PORT, () => {
     context.logger.info(
       {
         port: env.PORT,
-        environment: env.NODE_ENV
+        environment: env.NODE_ENV,
+        protocol: env.HTTPS_ENABLED ? "https" : "http"
       },
       "Security AI Lab backend started"
     );
@@ -157,7 +162,7 @@ bootstrap().catch((error: unknown) => {
   process.exit(1);
 });
 
-function closeServer(server: Server): Promise<void> {
+function closeServer(server: HttpServer | HttpsServer): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => {
       if (error) {
@@ -195,4 +200,48 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
 
 function isIgnorableCloseError(error: Error & { code?: string }): boolean {
   return error.code === "ERR_SERVER_NOT_RUNNING";
+}
+
+function createHttpListener(
+  app: ReturnType<typeof createApp>,
+  logger: Awaited<ReturnType<typeof createAppContext>>["logger"]
+): HttpServer | HttpsServer {
+  if (!env.HTTPS_ENABLED) {
+    return createHttpServer(app);
+  }
+
+  const keyPath = requireTlsFile(env.HTTPS_KEY_FILE, "HTTPS_KEY_FILE");
+  const certPath = requireTlsFile(env.HTTPS_CERT_FILE, "HTTPS_CERT_FILE");
+  const caPath = env.HTTPS_CA_FILE?.trim()
+    ? resolve(process.cwd(), env.HTTPS_CA_FILE)
+    : undefined;
+
+  logger.info(
+    {
+      keyPath,
+      certPath,
+      caPath
+    },
+    "Starting backend with local HTTPS enabled"
+  );
+
+  return createHttpsServer(
+    {
+      key: readFileSync(keyPath),
+      cert: readFileSync(certPath),
+      ...(caPath ? { ca: readFileSync(caPath) } : {})
+    },
+    app
+  );
+}
+
+function requireTlsFile(value: string | undefined, envName: string): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new Error(
+      `${envName} must be set when HTTPS_ENABLED=true. Run 'npm run certs:dev' and then start the HTTPS dev scripts.`
+    );
+  }
+
+  return resolve(process.cwd(), trimmed);
 }

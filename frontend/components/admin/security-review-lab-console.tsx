@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Globe,
@@ -12,7 +13,7 @@ import {
   ShieldCheck
 } from "lucide-react";
 
-import { runSecurityReviewLab } from "@/lib/api";
+import { getPrivateModeSession, runSecurityReviewLab } from "@/lib/api";
 import {
   AdminSecurityReviewResult,
   SecurityReviewAttackerEffort,
@@ -145,6 +146,34 @@ export function SecurityReviewLabConsole() {
   const [result, setResult] = useState<AdminSecurityReviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [privateModeActive, setPrivateModeActive] = useState<boolean | null>(null);
+  const [privateModeReady, setPrivateModeReady] = useState<boolean | null>(null);
+  const [privateModeVerificationError, setPrivateModeVerificationError] = useState<
+    string | null
+  >(null);
+
+  useEffect(() => {
+    void getPrivateModeSession()
+      .then((state) => {
+        setPrivateModeActive(Boolean(state.session));
+        setPrivateModeReady(state.routeVerified);
+        setPrivateModeVerificationError(state.verificationError);
+      })
+      .catch(() => {
+        setPrivateModeActive(false);
+        setPrivateModeReady(false);
+        setPrivateModeVerificationError(null);
+      });
+  }, []);
+
+  const privateModeBlockedMessage =
+    privateModeActive === true
+      ? t("privateMode.verifiedRequiredForSecurityModules")
+      : t("privateMode.requiredForSecurityModules");
+  const privateModeActionMessage =
+    privateModeActive === true
+      ? t("privateMode.verifyBeforeSecurityTools")
+      : t("privateMode.activateBeforeSecurityTools");
 
   const findingCounts = useMemo(() => {
     return (result?.findings ?? []).reduce(
@@ -166,6 +195,11 @@ export function SecurityReviewLabConsole() {
 
   async function handleRun() {
     const target = normalizeTarget(url);
+
+    if (privateModeReady !== true) {
+      setError(privateModeBlockedMessage);
+      return;
+    }
 
     if (!target) {
       setError(t("securityReview.urlRequired"));
@@ -214,6 +248,25 @@ export function SecurityReviewLabConsole() {
         </div>
       </div>
 
+      {privateModeReady === false ? (
+        <div className="rounded-[22px] border border-red-200 bg-red-50 px-4 py-4 text-sm text-red-800">
+          <p className="font-semibold text-red-900">
+            {privateModeBlockedMessage}
+          </p>
+          <p className="mt-2 leading-6">
+            {privateModeActionMessage}{" "}
+            <Link href="/admin/private-mode" className="font-semibold underline">
+              {t("privateMode.openConsole")}
+            </Link>
+          </p>
+          {privateModeVerificationError ? (
+            <p className="mt-2 leading-6 text-red-700">
+              {privateModeVerificationError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_140px_auto]">
         <label className="block">
           <span className="text-xs font-semibold uppercase tracking-[0.22em] text-black/50">
@@ -246,7 +299,7 @@ export function SecurityReviewLabConsole() {
           onClick={() => {
             void handleRun();
           }}
-          disabled={isRunning}
+          disabled={isRunning || privateModeReady !== true}
           className="mt-6 inline-flex items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#0f172a_0%,#1d4ed8_100%)] px-4 py-3 text-sm font-semibold text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-55"
         >
           <RefreshCcw className={cn("size-4", isRunning && "animate-spin")} />

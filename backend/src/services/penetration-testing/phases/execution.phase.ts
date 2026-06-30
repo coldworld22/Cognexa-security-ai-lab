@@ -6,6 +6,8 @@ import { z } from "zod";
 import type { AccessContext } from "../../../authorization/authorization.types";
 import { AppError } from "../../../utils/app-error";
 import type {
+  AuthorizedSecurityTestAuthEndpointDescriptorInput,
+  AuthorizedSecurityManualFormValidationInput,
   AuthorizedSecurityTestAuthProfile,
   AuthorizedSecurityTestModule,
   AuthorizedSecurityTestReport
@@ -84,6 +86,8 @@ export interface ExecutionResult {
 export interface ExecutionPhaseOptions {
   actor?: AccessContext;
   authProfiles?: AuthorizedSecurityTestAuthProfile[];
+  authEndpointDescriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   maxPages?: number;
   maxRequests?: number;
   defaultProvider?: string;
@@ -100,6 +104,8 @@ interface AiProviderSelection {
 export class ExecutionPhase {
   private readonly actor?: AccessContext;
   private readonly authProfiles: AuthorizedSecurityTestAuthProfile[];
+  private readonly authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  private readonly manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   private readonly maxPages: number;
   private readonly maxRequests: number;
   private readonly defaultProvider?: string;
@@ -125,6 +131,16 @@ export class ExecutionPhase {
   ) {
     this.actor = options.actor;
     this.authProfiles = this.normalizeAuthProfiles(options.authProfiles);
+    this.authEndpointDescriptors = this.normalizeAuthEndpointDescriptors(
+      options.authEndpointDescriptors
+    );
+    this.manualFormValidation = options.manualFormValidation
+      ? {
+          rateLimitPerMinute: options.manualFormValidation.rateLimitPerMinute,
+          credentialLabels: [...(options.manualFormValidation.credentialLabels ?? [])],
+          notes: options.manualFormValidation.notes
+        }
+      : undefined;
     this.maxPages = this.normalizeMaxPages(options.maxPages);
     this.maxRequests = this.normalizeMaxRequests(options.maxRequests);
     this.defaultProvider = options.defaultProvider?.trim() || undefined;
@@ -608,7 +624,9 @@ export class ExecutionPhase {
       authProfiles:
         module === "authorization" || module === "authentication"
           ? this.authProfiles
-          : this.authProfiles.filter((profile) => profile.role === "anonymous")
+          : this.authProfiles.filter((profile) => profile.role === "anonymous"),
+      authEndpointDescriptors: this.authEndpointDescriptors,
+      manualFormValidation: this.manualFormValidation
     };
 
     if (this.actor) {
@@ -974,7 +992,17 @@ export class ExecutionPhase {
     switch (failedType) {
       case "authentication":
         return "authorization";
+      case "csrf":
+        return "business_logic";
       case "authorization":
+        return "business_logic";
+      case "business_logic":
+        return "authorization";
+      case "oauth_flow":
+        return "open_redirect";
+      case "open_redirect":
+        return "oauth_flow";
+      case "ssrf":
         return "api_security";
       case "api_security":
         return "authorization";
@@ -1012,10 +1040,20 @@ export class ExecutionPhase {
     switch (module) {
       case "authentication":
         return "Compare anonymous and authenticated read-only responses without modifying state.";
+      case "csrf":
+        return "Inspect cookie-backed forms and API descriptions for origin and anti-CSRF protections.";
       case "authorization":
         return "Compare lower- and higher-trust read-only responses for the same resource.";
+      case "business_logic":
+        return "Compare workflow-step and approval-oriented views for client-controlled state progression issues.";
       case "api_security":
         return "Inspect public read-only API metadata and response shaping for sensitive routes.";
+      case "ssrf":
+        return "Probe URL-handling features with read-only same-origin destinations and compare fetch behavior.";
+      case "open_redirect":
+        return "Check redirect-style parameters with controlled off-origin targets and observe rejection behavior.";
+      case "oauth_flow":
+        return "Inspect OAuth and OIDC metadata, authorize entry points, and redirect_uri handling with read-only requests.";
       case "session_management":
         return "Review cookie, redirect, and session-boundary behavior with read-only navigation.";
       case "sql_injection":
@@ -1139,6 +1177,42 @@ export class ExecutionPhase {
         role: profile.role,
         headers: { ...(profile.headers ?? {}) },
         cookies: { ...(profile.cookies ?? {}) }
+      });
+    }
+
+    return normalized;
+  }
+
+  private normalizeAuthEndpointDescriptors(
+    descriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[]
+  ): AuthorizedSecurityTestAuthEndpointDescriptorInput[] {
+    if (!descriptors || descriptors.length === 0) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const normalized: AuthorizedSecurityTestAuthEndpointDescriptorInput[] = [];
+    for (const descriptor of descriptors.slice(0, 6)) {
+      const name = descriptor.name.trim();
+      const endpoint = descriptor.endpoint.trim();
+      if (!name || !endpoint || seen.has(endpoint.toLowerCase())) {
+        continue;
+      }
+
+      seen.add(endpoint.toLowerCase());
+      normalized.push({
+        type: "auth_api",
+        name,
+        entryUrl: descriptor.entryUrl.trim(),
+        endpoint,
+        method: "POST",
+        contentType: descriptor.contentType?.trim() || undefined,
+        fields: descriptor.fields.map((field) => field.trim()).filter(Boolean),
+        tokenFields:
+          descriptor.tokenFields?.map((field) => field.trim()).filter(Boolean) ??
+          undefined,
+        stagingOnly: descriptor.stagingOnly,
+        productionMode: descriptor.productionMode
       });
     }
 

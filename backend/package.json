@@ -6,6 +6,7 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsx watch src/main.ts",
+    "dev:https": "node ../scripts/run-backend-https.mjs",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "seed": "tsx src/scripts/seed.ts",

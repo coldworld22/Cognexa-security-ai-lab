@@ -376,6 +376,239 @@ const en = {
       "Use dedicated screens for focused admin workflows instead of stacking every control into the main dashboard.",
     openTool: "Open tool"
   },
+  privateMode: {
+    navLabel: "Private Mode",
+    launchDescription:
+      "Open the cloaking console on its own screen to manage Tor routing, relay chains, leak tests, and exit logs.",
+    screenTitle: "Private mode cloaking console",
+    screenDescription:
+      "This console keeps outbound cloaking controls separate from policy editing, passive scans, and authorized active testing.",
+    label: "Private Mode",
+    title: "Cloak outbound testing traffic behind controlled anonymity layers",
+    description:
+      "Configure Tor-first routing, staged VPN relay chains, or hybrid cloaking before security testing workflows leave the platform. The current implementation routes the governed web-scanning and authorized-testing paths through this service.",
+    loading: "Loading private mode state...",
+    loadFailed: "Failed to load private mode state.",
+    refresh: "Refresh",
+    save: "Save config",
+    saving: "Saving...",
+    saveFailed: "Failed to save private mode configuration.",
+    configSaved: "Private mode configuration saved.",
+    activate: "Activate",
+    activating: "Activating...",
+    activated: "Private mode activated.",
+    activateFailed: "Failed to activate private mode.",
+    deactivate: "Deactivate",
+    deactivating: "Deactivating...",
+    deactivated: "Private mode deactivated.",
+    deactivateFailed: "Failed to deactivate private mode.",
+    rotate: "Rotate circuit",
+    rotating: "Rotating...",
+    rotated: "Circuit rotated.",
+    rotateFailed: "Failed to rotate the active circuit.",
+    verify: "Verify cloak",
+    verifying: "Verifying...",
+    verified: "Cloaking verification completed.",
+    verifyFailed: "Failed to verify cloaking.",
+    leakTest: "Run leak test",
+    testing: "Testing...",
+    leakFailed: "Failed to run the leak test.",
+    leakTestCompleted: "Leak test completed.",
+    statusTitle: "Runtime status",
+    active: "Active",
+    inactive: "Inactive",
+    mode: "Mode",
+    cloaked: "Cloaked",
+    leaking: "Leak detected",
+    strategy: "Routing strategy",
+    strategies: {
+      tor: "Tor only",
+      "vpn-chain": "VPN chain",
+      hybrid: "Hybrid",
+      "rotating-proxy": "Rotating proxy"
+    },
+    dnsTor: "DNS over Tor",
+    dnsLocal: "Local DNS",
+    dnsOverTor: "Resolve DNS through the cloaked transport when possible",
+    tlsFingerprint: "TLS fingerprint profile",
+    fingerprintProfiles: {
+      browser: "Browser",
+      curl: "curl",
+      random: "Random"
+    },
+    torSocksPort: "Tor SOCKS port",
+    torControlPort: "Tor control port",
+    rotationInterval: "Circuit rotation interval (sec)",
+    requestJitter: "Request timing jitter (ms)",
+    exitGeography: "Preferred exit geographies",
+    exitGeographyPlaceholder: "us, nl, se",
+    enabledCategories: "Cloaked policy categories",
+    relayJson: "Relay chain JSON",
+    sessionTitle: "Session",
+    verificationTitle: "Verification",
+    noVerification: "Run cloak verification to inspect the current exit path.",
+    leakTestTitle: "Leak test",
+    noLeakTest: "Run a leak test to compare the direct path against the cloaked path.",
+    configTitle: "Configuration",
+    configHeading: "Workspace cloaking profile",
+    exitNodes: "Exit nodes",
+    circuits: "Circuits",
+    startedAt: "Started at",
+    lastRotatedAt: "Last rotated",
+    exitIp: "Exit IP",
+    directIp: "Direct IP",
+    exitRegion: "Exit region",
+    dnsTransport: "DNS transport",
+    leaks: "Leaks",
+    noLeaks: "No leaks reported",
+    testedAt: "Tested at",
+    none: "None",
+    unknown: "Unknown",
+    exitLogTitle: "Exit logs",
+    exitLogHeading: "Observed outbound egress",
+    noExitLogs: "No cloaked outbound requests have been recorded yet.",
+    sessionId: "Session ID",
+    requiredForSecurityModules:
+      "Private Mode must be active before using website scanning or security testing modules.",
+    verifiedRequiredForSecurityModules:
+      "Private Mode must be active and its exit path verified before using website scanning or security testing modules.",
+    activateBeforeSecurityTools:
+      "Activate Private Mode first, then return to this tool.",
+    verifyBeforeSecurityTools:
+      "Verify the exit path in Private Mode, then return to this tool.",
+    openConsole: "Open Private Mode",
+    activationTimelineTitle: "Connection stage",
+    connectionProgress: "Stage {current} of {total}",
+    connectionStates: {
+      idle: "Idle",
+      running: "Connecting",
+      pending: "Verification pending",
+      connected: "Connected",
+      warning: "Needs review",
+      failed: "Failed"
+    },
+    connectionHeadlines: {
+      idle: "Private Mode is standing by",
+      running: "Private Mode is establishing the cloaked route",
+      pending: "Private Mode is active and waiting for exit verification",
+      connected: "Private Mode is active",
+      warning: "Private Mode is active with route warnings",
+      failed: "Private Mode could not finish activation"
+    },
+    connectionDescriptions: {
+      idle:
+        "Start Private Mode to save the cloaking profile, establish the route, verify the exit path, and unlock security tools behind the cloaked transport.",
+      running:
+        "Cognexa is saving the routing profile, starting the cloaked session, synchronizing runtime state, and checking the exit path before it marks the workspace ready.",
+      pending:
+        "The cloaked session is running, but the exit path has not been confirmed yet. Run verification before starting sensitive security work.",
+      connected:
+        "The cloaked session is established and the latest verification confirmed an isolated exit path. Website scanning and authorized security workflows can proceed.",
+      warning:
+        "The cloaked session is up, but the latest verification reported leaks or an unconfirmed exit route. Review the verification result before using security modules.",
+      failed:
+        "Activation stopped before the cloaked route was ready. Review the failed stage, adjust the profile if needed, and retry the connection."
+    },
+    stageStates: {
+      current: "In progress",
+      complete: "Complete",
+      review: "Needs review",
+      upcoming: "Waiting",
+      failed: "Failed"
+    },
+    activationStages: {
+      profile: {
+        title: "Save workspace profile",
+        description:
+          "Persist the current Tor, relay, DNS, and jitter settings that define the cloaked route."
+      },
+      session: {
+        title: "Start cloaked session",
+        description:
+          "Create a new private session and move outbound security traffic onto the selected strategy."
+      },
+      sync: {
+        title: "Sync runtime state",
+        description:
+          "Refresh circuit metadata, exit log state, and the current workspace session after the route comes up."
+      },
+      verify: {
+        title: "Verify exit path",
+        description:
+          "Check the observed exit IP and leak indicators before treating the route as ready for security operations."
+      },
+      active: {
+        title: "Unlock security tools",
+        description:
+          "Mark the workspace as ready so website scanning and authorized testing run from the active private route."
+      }
+    },
+    securityModules: "Security modules",
+    securityStates: {
+      locked: "Locked",
+      pending: "Waiting for verification",
+      ready: "Unlocked",
+      review: "Review route warnings"
+    },
+    readyNotice: "Private Mode is active and the exit path was verified.",
+    pendingNotice:
+      "Private Mode is active. Exit verification could not be completed yet, so review the route before sensitive testing.",
+    warningNotice:
+      "Private Mode is active, but verification reported warnings on the current exit route.",
+    verificationWarnings:
+      "Verification completed with warnings. Review the exit path before continuing.",
+    snapshotTitle: "Connection snapshot",
+    snapshotHeading: "Direct identity versus cloaked identity",
+    snapshotDescription:
+      "Use this panel to compare the backend host's current public identity against the observed cloaked exit identity and decide whether the route is ready for sensitive work.",
+    directPath: "Direct path",
+    exitPath: "Observed exit path",
+    assuranceTitle: "Operator assurance",
+    location: "Location",
+    organization: "Organization",
+    asn: "ASN",
+    network: "Network",
+    torStatus: "Tor status",
+    verificationPath: "Verification path",
+    timezone: "Timezone",
+    advisories: "Routing notes",
+    noAdvisories: "No additional routing notes for the current profile.",
+    assuranceStates: {
+      verified: "Route verified",
+      review: "Operator review",
+      pending: "Verification pending",
+      idle: "No active route"
+    },
+    torStates: {
+      confirmed: "Confirmed Tor exit",
+      notDetected: "Not detected as a Tor exit",
+      unknown: "Tor status unavailable"
+    },
+    networkStates: {
+      ipv4: "IPv4",
+      ipv6: "IPv6",
+      unknown: "Unknown"
+    },
+    leakCodes: {
+      private_mode_inactive: "Private Mode is not active for this workspace.",
+      exit_ip_unavailable: "The service could not observe an exit IP for the current route.",
+      tor_exit_unconfirmed: "The verification path should be Tor-backed, but the observed exit was not confirmed as a Tor exit.",
+      exit_ip_matches_direct_path:
+        "The observed cloaked path matched the direct public IP, so the route does not appear isolated.",
+      dns_over_tor_requested_without_tor_transport:
+        "DNS over Tor is enabled, but the current verification path is not using a Tor-backed transport."
+    },
+    advisoryCodes: {
+      vpn_chain_external_tunnel_required:
+        "VPN chain mode relies on an external host or network tunnel. This console can show the current public identity, but it cannot prove relay order inside the app.",
+      hybrid_sensitive_categories_only:
+        "Hybrid mode only routes sensitive categories such as security research and vulnerability analysis through Tor-backed transport.",
+      hybrid_sensitive_categories_disabled:
+        "Hybrid mode fell back to an external URL path for verification because the sensitive cloaked categories are not enabled in this profile.",
+      rotating_proxy_uses_tor_transport:
+        "Rotating proxy currently uses the Tor-backed transport inside the app rather than a separate managed proxy pool."
+    }
+  },
   adminNetwork: {
     label: "Network Monitor",
     title: "Scan and watch LAN PCs from the admin console",
@@ -743,6 +976,31 @@ const en = {
       "Optional. Provide low-privilege and high-privilege request context as JSON with `headers` and `cookies` objects so the lab can compare authorization behavior safely.",
     lowPrivilegeProfile: "Low-privilege profile JSON",
     highPrivilegeProfile: "High-privilege profile JSON",
+    authEndpointDescriptors: "Declared auth endpoints",
+    authEndpointDescriptorDescription:
+      "Optional. Provide same-origin staging login metadata as a JSON array so the lab can recognize client-rendered authentication flows and focus passive checks without submitting credentials.",
+    authEndpointDescriptorArrayError:
+      "Declared auth endpoint JSON must be an array.",
+    authEndpointDescriptorObjectError:
+      "Each declared auth endpoint entry must be an object.",
+    authEndpointDescriptorStringArrayError:
+      "Declared auth endpoint fields and tokenFields must be string arrays.",
+    authEndpointDescriptorRequiredFieldError:
+      "Each declared auth endpoint needs name, entryUrl, endpoint, and at least one field.",
+    authEndpointDescriptorPlaceholder:
+      '[\n  {\n    "type": "auth_api",\n    "name": "corporate-login",\n    "entryUrl": "https://staging.example.com/login",\n    "endpoint": "https://staging.example.com/api/login",\n    "fields": ["corporateId", "userId", "password"],\n    "tokenFields": ["mfsapiin"]\n  }\n]',
+    manualFormValidation: "Manual POST form validation",
+    manualFormValidationDescription:
+      "Optional. Record operator-only POST login validation notes, labeled test credentials, and a guarded request-rate cap. The backend still keeps automated execution read-only.",
+    manualFormValidationRateLimit: "Rate limit per minute",
+    manualFormValidationCredentialLabels: "Test credential labels",
+    manualFormValidationCredentialPlaceholder:
+      "qa-corporate-admin\nqa-low-privilege",
+    manualFormValidationNotes: "Operator notes",
+    manualFormValidationNotesPlaceholder:
+      "Document the intended login flow or inert payloads for manual validation only.",
+    manualFormValidationCredentialRequired:
+      "Add at least one test credential label before enabling manual POST form validation.",
     profileJsonObjectError: "Auth profile JSON must be an object.",
     profileJsonStringMapError:
       "Auth profile headers and cookies must be string-to-string objects.",
@@ -796,6 +1054,8 @@ const en = {
     confidence: "Confidence",
     apiSignal: "API signal",
     vulnerabilityType: "Vulnerability type",
+    declaredAuthEndpoints: "Declared auth endpoints",
+    entryUrl: "Entry URL",
     endpoint: "Endpoint",
     httpMethod: "Method",
     signalConfidence: "Signal confidence",
@@ -812,9 +1072,14 @@ const en = {
     modules: {
       sql_injection: "SQL injection",
       xss: "XSS",
+      csrf: "CSRF",
       authentication: "Authentication",
       authorization: "Authorization",
       api_security: "API security",
+      ssrf: "SSRF",
+      open_redirect: "Open redirect",
+      business_logic: "Business logic",
+      oauth_flow: "OAuth flow",
       waf: "WAF normalization",
       session_management: "Session management"
     },
@@ -864,7 +1129,10 @@ const en = {
       data_leakage: "Data leakage",
       sql_injection: "SQL injection",
       xss: "XSS",
-      csrf: "CSRF"
+      csrf: "CSRF",
+      ssrf: "SSRF",
+      open_redirect: "Open redirect",
+      oauth_flow: "OAuth flow"
     },
     sources: {
       ai: "AI-assisted",

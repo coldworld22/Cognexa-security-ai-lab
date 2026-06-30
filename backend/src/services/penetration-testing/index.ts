@@ -7,6 +7,7 @@ export { DecisionEngine } from "./decision-engine.service";
 export { ExecutionPhase } from "./phases/execution.phase";
 export { ChainBuilder } from "./chain-builder.service";
 export { ReportGenerator } from "./report-generator.service";
+export { RemediationEngine } from "./remediation-engine.service";
 
 export type {
   Attack,
@@ -19,7 +20,14 @@ export type {
   Evidence,
   ExecutionResult,
   PenetrationTestContext,
+  PenetrationTestEngagementMetadata,
+  PenetrationTestAssuranceSummary,
+  PenetrationTestManualFormValidationSummary,
   PenetrationTestOrchestratorDependencies,
+  PenetrationTestRemediationOwner,
+  PenetrationTestRemediationPlan,
+  PenetrationTestRemediationPriority,
+  PenetrationTestRemediationWorkItem,
   PenetrationTestReport,
   PenetrationTestStreamEvent,
   Vulnerability

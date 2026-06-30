@@ -15,6 +15,12 @@ import { AppError } from "../../utils/app-error";
 import { AuthorizationService } from "../authorization/authorization.service";
 import { LLMService } from "../llm/llm.service";
 import { PolicyService } from "../policy/policy.service";
+import { executeBusinessLogicAbuseModule } from "../penetration-testing/modules/business-logic-abuse.module";
+import { executeCsrfTestingModule } from "../penetration-testing/modules/csrf-testing.module";
+import { executeOAuthFlowAbuseModule } from "../penetration-testing/modules/oauth-flow-abuse.module";
+import { executeOpenRedirectTestingModule } from "../penetration-testing/modules/open-redirect-testing.module";
+import { executeSsrfDetectionModule } from "../penetration-testing/modules/ssrf-detection.module";
+import { CloakingService } from "../private-mode/cloaking.service";
 import {
   WebsiteScanResult,
   WebsiteScannerService
@@ -37,6 +43,10 @@ import {
   AuthorizedSecurityPrediction,
   AuthorizedSecurityRiskLevel,
   AuthorizedSecurityPlanStep,
+  AuthorizedSecurityTestAuthEndpointDescriptor,
+  AuthorizedSecurityTestAuthEndpointDescriptorInput,
+  AuthorizedSecurityManualFormValidation,
+  AuthorizedSecurityManualFormValidationInput,
   AuthorizedSecurityTestAuthProfile,
   AuthorizedSecurityTestAuthProfileSummary,
   AuthorizedSecurityTestModule,
@@ -61,7 +71,9 @@ interface AuthorizedSecurityTestingServiceOptions {
   lookupHost?: typeof lookup;
   resolveTxtImpl?: typeof resolveTxt;
   now?: () => Date;
+  waitImpl?: (delayMs: number) => Promise<void>;
   verificationBypass?: VerificationBypassService;
+  privateMode?: CloakingService;
 }
 
 interface ChallengeDescriptor {
@@ -100,8 +112,10 @@ interface AdaptiveDecisionCandidate {
 
 interface RunState {
   runId: string;
+  workspaceId: string;
   requestedUrl: URL;
   maxRequests: number;
+  minProbeIntervalMs: number;
   requestsSent: number;
   moduleWarnings: string[];
   moduleConcurrency: number;
@@ -113,6 +127,7 @@ interface RunState {
   probeCache: Map<string, ProbeResponseSummary>;
   pendingProbeCache: Map<string, Promise<ProbeResponseSummary | null>>;
   requestReservationQueue: Promise<void>;
+  nextRateLimitedProbeAt: number;
   nextAllowedProbeAt: number;
 }
 
@@ -197,9 +212,14 @@ const AI_ATTACK_PATH_SCHEMA = z.object({
 const MODULE_PRIORITY_BASE_SCORES: Record<AuthorizedSecurityTestModule, number> = {
   sql_injection: 52,
   xss: 48,
+  csrf: 49,
   authentication: 50,
   authorization: 50,
   api_security: 46,
+  ssrf: 44,
+  open_redirect: 42,
+  business_logic: 51,
+  oauth_flow: 47,
   waf: 40,
   session_management: 54
 };
@@ -210,7 +230,9 @@ export class AuthorizedSecurityTestingService {
   private readonly lookupHost: typeof lookup;
   private readonly resolveTxtImpl: typeof resolveTxt;
   private readonly now: () => Date;
+  private readonly waitImpl: (delayMs: number) => Promise<void>;
   private readonly verificationBypass: VerificationBypassService;
+  private readonly privateMode?: CloakingService;
 
   constructor(
     private readonly authorization: AuthorizationService,
@@ -228,8 +250,15 @@ export class AuthorizedSecurityTestingService {
     this.lookupHost = options.lookupHost ?? lookup;
     this.resolveTxtImpl = options.resolveTxtImpl ?? resolveTxt;
     this.now = options.now ?? (() => new Date());
+    this.waitImpl =
+      options.waitImpl ??
+      ((delayMs) =>
+        new Promise((resolve) => {
+          setTimeout(resolve, delayMs);
+        }));
     this.verificationBypass =
       options.verificationBypass ?? new VerificationBypassService();
+    this.privateMode = options.privateMode;
   }
 
   async startDomainVerification(
@@ -466,7 +495,10 @@ export class AuthorizedSecurityTestingService {
       return this.toVerificationSummary(expired, challenge.instructions);
     }
 
-    const result = await this.performVerificationCheck(verification);
+    const result = await this.performVerificationCheck(
+      verification,
+      actor.workspaceId
+    );
     const updated = await this.verifications.updateStatus(verification.id, {
       status: result.verified ? "verified" : this.isExpired(verification.expiresAt) ? "expired" : "failed",
       lastCheckedAt: this.now().toISOString(),
@@ -536,6 +568,22 @@ export class AuthorizedSecurityTestingService {
     const maxPages = this.normalizeMaxPages(input.maxPages);
     const maxRequests = this.normalizeMaxRequests(input.maxRequests);
     const authProfiles = this.normalizeAuthProfiles(input.authProfiles);
+    const authEndpointDescriptors = this.normalizeAuthEndpointDescriptors(
+      input.authEndpointDescriptors,
+      requestedUrl
+    );
+    const manualFormValidation = this.normalizeManualFormValidation(
+      input.manualFormValidation
+    );
+    if (
+      manualFormValidation &&
+      authEndpointDescriptors.length === 0
+    ) {
+      throw new AppError(
+        "Manual POST form validation requires at least one declared authentication endpoint descriptor.",
+        400
+      );
+    }
     const bypassDecision = this.verificationBypass.evaluate(
       requestedUrl,
       input.devModeBypass
@@ -645,19 +693,35 @@ export class AuthorizedSecurityTestingService {
           isDevelopmentBypassVerification || bypassDecision.active,
         destructive: false,
         readOnlyMethods: ["GET", "HEAD", "OPTIONS"],
+        manualPostValidation: manualFormValidation
+          ? {
+              documentedOnly: true,
+              rateLimitPerMinute: manualFormValidation.rateLimitPerMinute,
+              credentialLabelCount:
+                manualFormValidation.credentialLabels.length
+            }
+          : false,
         modules: requestedModules,
         maxPages,
         maxRequests
       }
     });
 
-    await this.assertSafePublicUrl(requestedUrl);
+    await this.assertSafePublicUrl(requestedUrl, actor.workspaceId);
 
     const guardrails = this.buildGuardrails(
       maxRequests,
       isDevelopmentLocalVerification,
-      isDevelopmentBypassVerification || bypassDecision.active
+      isDevelopmentBypassVerification || bypassDecision.active,
+      manualFormValidation
     );
+    if (authEndpointDescriptors.length > 0) {
+      guardrails.push(
+        manualFormValidation
+          ? "Declared authentication endpoint descriptors can carry manual POST validation notes for operators, but the service does not submit credentials or replay tokens automatically."
+          : "Declared authentication endpoint descriptors are used for discovery and passive metadata only; the run does not submit credentials or replay tokens against them."
+      );
+    }
     const run = await this.runs.create({
       workspaceId: actor.workspaceId,
       organizationId: actor.organizationId,
@@ -675,8 +739,12 @@ export class AuthorizedSecurityTestingService {
 
     const state: RunState = {
       runId: run.id,
+      workspaceId: actor.workspaceId,
       requestedUrl,
       maxRequests,
+      minProbeIntervalMs: manualFormValidation
+        ? Math.ceil(60_000 / manualFormValidation.rateLimitPerMinute)
+        : 0,
       requestsSent: 0,
       moduleWarnings: [],
       moduleConcurrency: 1,
@@ -688,6 +756,7 @@ export class AuthorizedSecurityTestingService {
       probeCache: new Map(),
       pendingProbeCache: new Map(),
       requestReservationQueue: Promise.resolve(),
+      nextRateLimitedProbeAt: 0,
       nextAllowedProbeAt: 0
     };
 
@@ -697,7 +766,9 @@ export class AuthorizedSecurityTestingService {
       message: "Authorized security test run created.",
       metadata: {
         targetUrl: requestedUrl.toString(),
-        modules: requestedModules
+        modules: requestedModules,
+        declaredAuthEndpoints: authEndpointDescriptors.length,
+        manualFormValidation: manualFormValidation !== undefined
       }
     });
     await this.logEvent(state.runId, {
@@ -729,17 +800,64 @@ export class AuthorizedSecurityTestingService {
       });
     }
 
+    if (authEndpointDescriptors.length > 0) {
+      await this.logEvent(state.runId, {
+        eventType: "discovery",
+        severity: "info",
+        message: "Declared authentication endpoints were registered for this run.",
+        metadata: {
+          descriptors: authEndpointDescriptors.map((descriptor) => ({
+            name: descriptor.name,
+            entryUrl: descriptor.entryUrl,
+            endpoint: descriptor.endpoint,
+            method: descriptor.method,
+            contentType: descriptor.contentType,
+            stagingOnly: descriptor.stagingOnly,
+            productionMode: descriptor.productionMode
+          }))
+        }
+      });
+    }
+
+    if (manualFormValidation) {
+      await this.logEvent(state.runId, {
+        eventType: "status",
+        severity: "info",
+        message: "Manual POST form validation metadata was registered for this run.",
+        metadata: {
+          rateLimitPerMinute: manualFormValidation.rateLimitPerMinute,
+          credentialLabels: manualFormValidation.credentialLabels,
+          notes: manualFormValidation.notes,
+          automatedExecution: "read_only_only"
+        }
+      });
+    }
+
+    const descriptorWarnings = this.buildDeclaredAuthEndpointWarnings(
+      authEndpointDescriptors,
+      isDevelopmentLocalVerification ||
+        isDevelopmentBypassVerification ||
+        bypassDecision.active,
+      manualFormValidation
+    );
+
     try {
       const scan = await this.websiteScanner.scanWebsite(actor, {
         url: requestedUrl.toString(),
         maxPages
       });
 
-      const baseline = this.toBaseline(scan);
+      const baseline = this.toBaseline(
+        scan,
+        authEndpointDescriptors,
+        descriptorWarnings,
+        manualFormValidation
+      );
       const initialModulePriorities = this.buildModulePriorities(
         scan,
         requestedModules,
-        authProfiles
+        authProfiles,
+        authEndpointDescriptors
       );
       const planning = await this.buildPlan(
         actor,
@@ -781,7 +899,8 @@ export class AuthorizedSecurityTestingService {
         initialPlannedSteps,
         state,
         scan,
-        authProfiles
+        authProfiles,
+        authEndpointDescriptors
       );
       state.moduleWarnings.push(...initialExecution.warnings);
 
@@ -827,7 +946,8 @@ export class AuthorizedSecurityTestingService {
           adaptiveFollowUp.steps,
           state,
           scan,
-          authProfiles
+          authProfiles,
+          authEndpointDescriptors
         );
         state.moduleWarnings.push(...followUpExecution.warnings);
         executionFindings = [
@@ -839,7 +959,8 @@ export class AuthorizedSecurityTestingService {
       const modulePriorities = this.buildModulePriorities(
         scan,
         this.uniqueModules(plannedSteps.map((step) => step.category)),
-        authProfiles
+        authProfiles,
+        authEndpointDescriptors
       );
 
       const findings = await this.validateFindings(
@@ -997,23 +1118,46 @@ export class AuthorizedSecurityTestingService {
     module: AuthorizedSecurityTestModule,
     state: RunState,
     scan: WebsiteScanResult,
-    authProfiles: AuthorizedSecurityTestAuthProfile[]
+    authProfiles: AuthorizedSecurityTestAuthProfile[],
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[]
   ): Promise<ModuleExecutionResult> {
+    const externalModuleContext = {
+      state,
+      scan,
+      authProfiles,
+      performProbe: this.performProbe.bind(this),
+      logEvent: this.logEvent.bind(this)
+    };
+
     switch (module) {
       case "sql_injection":
         return this.executeSqlInjectionChecks(state, scan);
       case "xss":
         return this.executeXssChecks(state, scan);
+      case "csrf":
+        return executeCsrfTestingModule(externalModuleContext);
       case "authentication":
         return this.executeAuthenticationChecks(state, scan);
       case "authorization":
         return this.executeAuthorizationChecks(state, scan, authProfiles);
       case "api_security":
         return this.executeApiSecurityChecks(state, scan, authProfiles);
+      case "ssrf":
+        return executeSsrfDetectionModule(externalModuleContext);
+      case "open_redirect":
+        return executeOpenRedirectTestingModule(externalModuleContext);
+      case "business_logic":
+        return executeBusinessLogicAbuseModule(externalModuleContext);
+      case "oauth_flow":
+        return executeOAuthFlowAbuseModule(externalModuleContext);
       case "waf":
         return this.executeWafNormalizationChecks(state, scan);
       case "session_management":
-        return this.executeSessionManagementChecks(state, scan);
+        return this.executeSessionManagementChecks(
+          state,
+          scan,
+          authEndpointDescriptors
+        );
       default:
         return {
           findings: [],
@@ -1026,7 +1170,8 @@ export class AuthorizedSecurityTestingService {
     steps: AuthorizedSecurityPlanStep[],
     state: RunState,
     scan: WebsiteScanResult,
-    authProfiles: AuthorizedSecurityTestAuthProfile[]
+    authProfiles: AuthorizedSecurityTestAuthProfile[],
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[]
   ): Promise<ModuleExecutionResult> {
     const results: ModuleExecutionResult[] = steps.map(() => ({
       findings: [],
@@ -1059,7 +1204,8 @@ export class AuthorizedSecurityTestingService {
             step.category,
             state,
             scan,
-            authProfiles
+            authProfiles,
+            authEndpointDescriptors
           );
         } catch (error) {
           const message =
@@ -2192,7 +2338,8 @@ export class AuthorizedSecurityTestingService {
 
   private async executeSessionManagementChecks(
     state: RunState,
-    scan: WebsiteScanResult
+    scan: WebsiteScanResult,
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[]
   ): Promise<ModuleExecutionResult> {
     const findings: AuthorizedSecurityFinding[] = [];
     const warnings: string[] = [];
@@ -2275,8 +2422,9 @@ export class AuthorizedSecurityTestingService {
       });
     }
 
-    const loginCandidates = this.collectPageUrls(scan).filter((url) =>
-      /(login|signin|auth)/i.test(url.pathname)
+    const loginCandidates = this.collectLoginSurfaceCandidates(
+      scan,
+      authEndpointDescriptors
     );
     for (const candidate of loginCandidates.slice(0, 2)) {
       const probe = await this.performProbe(state, candidate, {
@@ -2342,7 +2490,7 @@ export class AuthorizedSecurityTestingService {
       });
     }
 
-    await this.assertSafePublicUrl(url);
+    await this.assertSafePublicUrl(url, state.workspaceId);
 
     state.requestsSent += 1;
     const method = input.method ?? "GET";
@@ -2448,14 +2596,14 @@ export class AuthorizedSecurityTestingService {
     headers: Record<string, string>,
     method: "GET" | "HEAD" | "OPTIONS"
   ): Promise<ProbeResponseSummary | null> {
-    const hasBudget = await this.reserveProbeSlot(state);
-    if (!hasBudget) {
+    const scheduledAt = await this.reserveProbeSlot(state);
+    if (scheduledAt === null) {
       return null;
     }
 
     let response: Response | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await this.waitForAdaptiveWindow(state);
+      await this.waitForProbeWindow(state, scheduledAt);
       response = await this.fetchWithRedirects(state, url, {
         method,
         headers,
@@ -2535,12 +2683,24 @@ export class AuthorizedSecurityTestingService {
 
       try {
         state.networkRequestsSent += 1;
-        const response = await this.fetchImpl(current, {
-          method: input.method,
-          redirect: "manual",
-          signal: controller.signal,
-          headers: input.headers
-        });
+        const response = this.privateMode
+          ? await this.privateMode.fetchForWorkspace(
+              state.workspaceId,
+              "vulnerability_analysis",
+              current,
+              {
+                method: input.method,
+                redirect: "manual",
+                signal: controller.signal,
+                headers: input.headers
+              }
+            )
+          : await this.fetchImpl(current, {
+              method: input.method,
+              redirect: "manual",
+              signal: controller.signal,
+              headers: input.headers
+            });
         clearTimeout(timeout);
 
         if (![301, 302, 303, 307, 308].includes(response.status)) {
@@ -2560,7 +2720,7 @@ export class AuthorizedSecurityTestingService {
           });
         }
 
-        await this.assertSafePublicUrl(next);
+        await this.assertSafePublicUrl(next, state.workspaceId);
         current = next;
       } catch (error) {
         clearTimeout(timeout);
@@ -2609,7 +2769,7 @@ export class AuthorizedSecurityTestingService {
     });
   }
 
-  private async reserveProbeSlot(state: RunState): Promise<boolean> {
+  private async reserveProbeSlot(state: RunState): Promise<number | null> {
     let releaseCurrentReservation!: () => void;
     const previousReservation = state.requestReservationQueue;
     state.requestReservationQueue = new Promise<void>((resolve) => {
@@ -2620,18 +2780,29 @@ export class AuthorizedSecurityTestingService {
 
     try {
       if (state.requestsSent >= state.maxRequests) {
-        return false;
+        return null;
       }
 
+      const scheduledAt =
+        state.minProbeIntervalMs > 0
+          ? Math.max(Date.now(), state.nextRateLimitedProbeAt)
+          : 0;
       state.requestsSent += 1;
-      return true;
+      if (state.minProbeIntervalMs > 0) {
+        state.nextRateLimitedProbeAt = scheduledAt + state.minProbeIntervalMs;
+      }
+
+      return scheduledAt;
     } finally {
       releaseCurrentReservation();
     }
   }
 
-  private async waitForAdaptiveWindow(state: RunState): Promise<void> {
-    const delayMs = state.nextAllowedProbeAt - Date.now();
+  private async waitForProbeWindow(
+    state: RunState,
+    scheduledAt: number
+  ): Promise<void> {
+    const delayMs = Math.max(scheduledAt, state.nextAllowedProbeAt) - Date.now();
     if (delayMs > 0) {
       await this.wait(delayMs);
     }
@@ -2679,27 +2850,33 @@ export class AuthorizedSecurityTestingService {
       return Promise.resolve();
     }
 
-    return new Promise((resolve) => {
-      setTimeout(resolve, delayMs);
-    });
+    return this.waitImpl(delayMs);
   }
 
   private buildGuardrails(
     maxRequests: number,
     developmentLocalTarget = false,
-    developmentVerificationBypass = false
+    developmentVerificationBypass = false,
+    manualFormValidation?: AuthorizedSecurityManualFormValidation
   ): string[] {
-    return [
+    const guardrails = [
       developmentLocalTarget
         ? "Development local-target mode is active for this run and limits requests to the exact localhost or private hostname that was explicitly approved in development."
         : developmentVerificationBypass
           ? "Development verification bypass is active for this run and only applies because the backend is in development, the bypass env flag is enabled, and the hostname matched the explicit allowlist."
-        : "Requests are limited to verified public hostnames only.",
+          : "Requests are limited to verified public hostnames only.",
       "Execution is restricted to the original origin and to read-only GET, HEAD, and OPTIONS methods.",
       "The module does not submit credentials, upload files, change data, brute-force accounts, or execute destructive payloads.",
-      `The run stops after ${maxRequests} probe requests to preserve reversibility and auditability.`,
+      manualFormValidation
+        ? `Documented manual POST form validation is limited to labeled test credentials and the automated probe engine is throttled to ${manualFormValidation.rateLimitPerMinute} request(s) per minute.`
+        : `The run stops after ${maxRequests} probe requests to preserve reversibility and auditability.`,
+      manualFormValidation
+        ? `The run stops after ${maxRequests} probe requests to preserve reversibility and auditability.`
+        : undefined,
       "Potential exploit chains are modeled from confirmed findings instead of being executed destructively."
     ];
+
+    return guardrails.filter((guardrail): guardrail is string => Boolean(guardrail));
   }
 
   private resolveModuleConcurrency(
@@ -2724,9 +2901,11 @@ export class AuthorizedSecurityTestingService {
   private buildModulePriorities(
     scan: WebsiteScanResult,
     modules: AuthorizedSecurityTestModule[],
-    authProfiles: AuthorizedSecurityTestAuthProfile[]
+    authProfiles: AuthorizedSecurityTestAuthProfile[],
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[]
   ): AuthorizedSecurityModulePriority[] {
     const pageUrls = this.collectPageUrls(scan);
+    const apiCandidates = this.buildApiCandidates(scan);
     const parameterCandidates = this.buildParameterizedCandidates(pageUrls, [
       "search",
       "filter",
@@ -2737,16 +2916,51 @@ export class AuthorizedSecurityTestingService {
       "product",
       "details"
     ]);
+    const ssrfCandidates = this.buildParameterizedCandidates(
+      [...pageUrls, ...apiCandidates],
+      [
+        "fetch",
+        "proxy",
+        "url",
+        "uri",
+        "image",
+        "avatar",
+        "feed",
+        "import",
+        "preview",
+        "webhook",
+        "resource"
+      ]
+    );
+    const redirectCandidates = this.buildParameterizedCandidates(
+      [...pageUrls, ...apiCandidates],
+      ["redirect", "return", "next", "continue", "callback", "oauth", "sso"]
+    );
     const protectedCandidates = this.buildProtectedRouteCandidates(scan);
-    const loginSurfaceDetected =
-      scan.surface.loginForms > 0 ||
-      pageUrls.some((url) => /(login|signin|auth)/i.test(url.pathname));
+    const loginSurfaceDetected = this.hasDetectedLoginSurface(
+      scan,
+      authEndpointDescriptors
+    );
+    const declaredAuthApiDetected = authEndpointDescriptors.length > 0;
     const adminSurfaceDetected = protectedCandidates.some((candidate) =>
       /(admin|users|roles|permissions|settings|manage)/i.test(candidate.pathname)
     );
     const apiSurfaceDetected =
-      this.buildApiCandidates(scan).length > 0 ||
+      apiCandidates.length > 0 ||
       pageUrls.some((url) => /^\/api(\/|$)/i.test(url.pathname));
+    const workflowSurfaceDetected =
+      [...pageUrls, ...apiCandidates].some((url) =>
+        /(checkout|cart|order|billing|invoice|payment|subscription|redeem|coupon|promo|discount|credit|balance|transfer|approve|review|invite|trial|upgrade|downgrade|workflow|wizard|step)/i.test(
+          url.pathname
+        )
+      );
+    const oauthSurfaceDetected =
+      [...pageUrls, ...apiCandidates].some((url) =>
+        /(oauth|oidc|authorize|callback|sso|openid)/i.test(url.pathname)
+      ) ||
+      scan.exposures.endpoints.some((endpoint) =>
+        /(oauth|oidc|authorize|callback|sso|openid)/i.test(endpoint.url)
+      );
     const weakCookieSignals =
       scan.cookies.missingSecure +
       scan.cookies.missingHttpOnly +
@@ -2789,11 +3003,31 @@ export class AuthorizedSecurityTestingService {
               );
             }
             break;
+          case "csrf":
+            if (weakCookieSignals > 0) {
+              score += 9;
+              reasons.push(
+                "Cookie posture already showed weak SameSite or session boundaries, which increases the value of CSRF review."
+              );
+            }
+            if (loginSurfaceDetected || workflowSurfaceDetected) {
+              score += 7;
+              reasons.push(
+                "Stateful forms or workflow routes were discovered and are good candidates for anti-CSRF validation."
+              );
+            }
+            break;
           case "authentication":
             if (loginSurfaceDetected) {
               score += 10;
               reasons.push(
                 "Login or sign-in surface was discovered in the passive baseline."
+              );
+            }
+            if (declaredAuthApiDetected) {
+              score += 6;
+              reasons.push(
+                "A declared staging authentication API was supplied for discovery, which sharpens the login boundary for safe validation."
               );
             }
             if (adminSurfaceDetected) {
@@ -2824,10 +3058,72 @@ export class AuthorizedSecurityTestingService {
                 "API-oriented routes or documentation paths were discovered during passive scanning."
               );
             }
+            if (declaredAuthApiDetected) {
+              score += 7;
+              reasons.push(
+                "A declared authentication API descriptor is available, so CORS, header, and token-boundary review can be scoped more precisely without credential submission."
+              );
+            }
             if (scan.headers.accessControlAllowOrigin || scan.headers.accessControlAllowCredentials) {
               score += 4;
               reasons.push(
                 "CORS-related headers were already present in the baseline and should be validated."
+              );
+            }
+            break;
+          case "ssrf":
+            if (ssrfCandidates.length > 0) {
+              score += 11;
+              reasons.push(
+                "URL-handling or fetch-style endpoints were discovered and can be reviewed for server-side retrieval behavior."
+              );
+            }
+            if (apiSurfaceDetected) {
+              score += 3;
+              reasons.push(
+                "API-style routes were present, which often hide server-side fetch helpers and webhook utilities."
+              );
+            }
+            break;
+          case "open_redirect":
+            if (redirectCandidates.length > 0) {
+              score += 11;
+              reasons.push(
+                "Redirect-style parameters or routes were discovered and should be checked for off-origin navigation handling."
+              );
+            }
+            if (oauthSurfaceDetected) {
+              score += 4;
+              reasons.push(
+                "OAuth or SSO surface was present, which raises the value of redirect-boundary validation."
+              );
+            }
+            break;
+          case "business_logic":
+            if (workflowSurfaceDetected) {
+              score += 12;
+              reasons.push(
+                "Checkout, billing, approval, or workflow routes were discovered and warrant business-rule validation."
+              );
+            }
+            if (comparisonProfilesPresent) {
+              score += 5;
+              reasons.push(
+                "Differential auth profiles are available, which helps validate workflow views across trust levels."
+              );
+            }
+            break;
+          case "oauth_flow":
+            if (oauthSurfaceDetected) {
+              score += 12;
+              reasons.push(
+                "OAuth, OIDC, or SSO routes were discovered and are suitable for authorization-flow review."
+              );
+            }
+            if (loginSurfaceDetected) {
+              score += 4;
+              reasons.push(
+                "Login surface is present, which commonly exposes OAuth entry points and state-handling logic."
               );
             }
             break;
@@ -2856,6 +3152,12 @@ export class AuthorizedSecurityTestingService {
               score += 6;
               reasons.push(
                 "Login-related responses were discovered and can be checked for cache and session hardening."
+              );
+            }
+            if (declaredAuthApiDetected) {
+              score += 4;
+              reasons.push(
+                "Declared authentication entry points are available, which helps focus cache and session-boundary review on the correct login surface."
               );
             }
             break;
@@ -3168,6 +3470,31 @@ export class AuthorizedSecurityTestingService {
       "session_management",
       "A reflection signal is more valuable when paired with session and cookie hardening evidence from the same application flow.",
       byCategory.get("xss") ?? [],
+      "medium"
+    );
+
+    addDecision(
+      "open_redirect",
+      "Authentication and OAuth-oriented findings justify a redirect-boundary follow-up on the same trust flow.",
+      [...(byCategory.get("authentication") ?? []), ...(byCategory.get("oauth_flow") ?? [])],
+      "medium"
+    );
+
+    addDecision(
+      "business_logic",
+      "Authorization and CSRF signals around workflow surfaces justify deeper business-rule review.",
+      [...(byCategory.get("authorization") ?? []), ...(byCategory.get("csrf") ?? [])],
+      "medium"
+    );
+
+    addDecision(
+      "oauth_flow",
+      "Redirect, login, and cookie-boundary findings justify a focused OAuth and OIDC follow-up.",
+      [
+        ...(byCategory.get("open_redirect") ?? []),
+        ...(byCategory.get("authentication") ?? []),
+        ...(byCategory.get("csrf") ?? [])
+      ],
       "medium"
     );
 
@@ -3485,13 +3812,18 @@ export class AuthorizedSecurityTestingService {
         findings
       );
     } catch {
-      return this.buildHeuristicPredictions(scan, findings);
+      return this.buildHeuristicPredictions(
+        scan,
+        findings,
+        baseline.declaredAuthEndpoints
+      );
     }
   }
 
   private buildHeuristicPredictions(
     scan: WebsiteScanResult,
-    findings: AuthorizedSecurityFinding[]
+    findings: AuthorizedSecurityFinding[],
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[]
   ): AuthorizedSecurityPrediction[] {
     const actionableCategories = new Set(
       findings
@@ -3571,7 +3903,7 @@ export class AuthorizedSecurityTestingService {
     }
 
     if (
-      scan.surface.loginForms > 0 &&
+      this.hasDetectedLoginSurface(scan, authEndpointDescriptors) &&
       this.buildProtectedRouteCandidates(scan).length > 0
     ) {
       addPrediction(
@@ -3580,7 +3912,7 @@ export class AuthorizedSecurityTestingService {
         "Broader role-boundary gaps may exist beyond the currently compared routes",
         "The site exposes both login surface and privileged-looking routes, but the current run may not have covered all scoped admin or account endpoints.",
         [
-          `loginForms=${scan.surface.loginForms}`,
+          `loginSurface=${scan.surface.loginForms > 0 ? "form" : authEndpointDescriptors.length > 0 ? "descriptor" : "client-rendered"}`,
           `protectedRoutes=${this.buildProtectedRouteCandidates(scan).length}`
         ],
         "Repeat the guarded run with more low/high privilege coverage and expand differential checks to additional account, settings, and admin API routes."
@@ -4115,7 +4447,24 @@ export class AuthorizedSecurityTestingService {
   }
 
   private humanizeModule(module: AuthorizedSecurityTestModule): string {
-    return module.replace(/_/g, " ");
+    switch (module) {
+      case "sql_injection":
+        return "SQL injection";
+      case "xss":
+        return "XSS";
+      case "csrf":
+        return "CSRF";
+      case "ssrf":
+        return "SSRF";
+      case "api_security":
+        return "API security";
+      case "oauth_flow":
+        return "OAuth flow";
+      case "session_management":
+        return "session management";
+      default:
+        return module.replace(/_/g, " ");
+    }
   }
 
   private formatModuleList(modules: AuthorizedSecurityTestModule[]): string {
@@ -4485,6 +4834,58 @@ export class AuthorizedSecurityTestingService {
     );
   }
 
+  private collectLoginSurfaceCandidates(
+    scan: WebsiteScanResult,
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[] = []
+  ): URL[] {
+    const candidates = this.collectPageUrls(scan).filter((url) =>
+      /(login|signin|auth)/i.test(url.pathname)
+    );
+
+    for (const descriptor of authEndpointDescriptors) {
+      try {
+        candidates.push(new URL(descriptor.entryUrl));
+      } catch {
+        continue;
+      }
+    }
+
+    for (const finding of scan.findings) {
+      if (!this.isClientRenderedAuthSurfaceFinding(finding) || !finding.pageUrl) {
+        continue;
+      }
+
+      try {
+        candidates.push(new URL(finding.pageUrl));
+      } catch {
+        continue;
+      }
+    }
+
+    return this.dedupeUrls(candidates);
+  }
+
+  private hasDetectedLoginSurface(
+    scan: WebsiteScanResult,
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[] = []
+  ): boolean {
+    return (
+      scan.surface.loginForms > 0 ||
+      authEndpointDescriptors.length > 0 ||
+      this.collectPageUrls(scan).some((url) => /(login|signin|auth)/i.test(url.pathname)) ||
+      scan.findings.some((finding) => this.isClientRenderedAuthSurfaceFinding(finding))
+    );
+  }
+
+  private isClientRenderedAuthSurfaceFinding(
+    finding: WebsiteScanResult["findings"][number]
+  ): boolean {
+    return (
+      finding.id === "forms-client-rendered-auth-flow" ||
+      /client-rendered authentication flow detected/i.test(finding.title)
+    );
+  }
+
   private dedupeUrls(urls: URL[]): URL[] {
     const map = new Map<string, URL>();
     for (const url of urls) {
@@ -4613,6 +5014,134 @@ export class AuthorizedSecurityTestingService {
     return normalized;
   }
 
+  private normalizeAuthEndpointDescriptors(
+    descriptors: AuthorizedSecurityTestAuthEndpointDescriptorInput[] | undefined,
+    requestedUrl: URL
+  ): AuthorizedSecurityTestAuthEndpointDescriptor[] {
+    if (!descriptors || descriptors.length === 0) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const normalized: AuthorizedSecurityTestAuthEndpointDescriptor[] = [];
+
+    for (const descriptor of descriptors.slice(0, 6)) {
+      const name = descriptor.name.trim();
+      const entryUrl = this.normalizeRequestedUrl(descriptor.entryUrl).url;
+      const endpoint = this.normalizeRequestedUrl(descriptor.endpoint).url;
+
+      if (entryUrl.origin !== requestedUrl.origin || endpoint.origin !== requestedUrl.origin) {
+        throw new AppError(
+          "Declared auth endpoint descriptors must stay on the exact verified origin.",
+          400,
+          {
+            requestedOrigin: requestedUrl.origin,
+            entryUrl: entryUrl.toString(),
+            endpoint: endpoint.toString()
+          }
+        );
+      }
+
+      const dedupeKey = endpoint.toString().toLowerCase();
+      if (!name || seen.has(dedupeKey)) {
+        continue;
+      }
+
+      const fields = [...new Set(descriptor.fields.map((field) => field.trim()).filter(Boolean))];
+      if (fields.length === 0) {
+        continue;
+      }
+
+      const tokenFields = [
+        ...new Set(
+          (descriptor.tokenFields ?? [])
+            .map((field) => field.trim())
+            .filter((field) => field && fields.includes(field))
+        )
+      ];
+
+      seen.add(dedupeKey);
+      normalized.push({
+        type: "auth_api",
+        name,
+        entryUrl: entryUrl.toString(),
+        endpoint: endpoint.toString(),
+        method: "POST",
+        contentType:
+          descriptor.contentType?.trim() || "application/x-www-form-urlencoded",
+        fields,
+        tokenFields,
+        stagingOnly: descriptor.stagingOnly !== false,
+        productionMode: "passive_only"
+      });
+    }
+
+    return normalized;
+  }
+
+  private normalizeManualFormValidation(
+    input: AuthorizedSecurityManualFormValidationInput | undefined
+  ): AuthorizedSecurityManualFormValidation | undefined {
+    if (!input) {
+      return undefined;
+    }
+
+    const credentialLabels = [
+      ...new Set(
+        (input.credentialLabels ?? [])
+          .map((label) => label.trim())
+          .filter(Boolean)
+      )
+    ].slice(0, 8);
+    if (credentialLabels.length === 0) {
+      throw new AppError(
+        "Manual POST form validation requires at least one test credential label.",
+        400
+      );
+    }
+
+    const requestedRate = Math.trunc(input.rateLimitPerMinute ?? 5);
+    const rateLimitPerMinute =
+      Number.isFinite(requestedRate) && requestedRate > 0
+        ? Math.min(60, requestedRate)
+        : 5;
+    const notes = input.notes?.trim();
+
+    return {
+      rateLimitPerMinute,
+      credentialLabels,
+      ...(notes ? { notes } : {})
+    };
+  }
+
+  private buildDeclaredAuthEndpointWarnings(
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[],
+    developmentModeActive: boolean,
+    manualFormValidation?: AuthorizedSecurityManualFormValidation
+  ): string[] {
+    if (authEndpointDescriptors.length === 0) {
+      return [];
+    }
+
+    if (manualFormValidation) {
+      return [
+        developmentModeActive
+          ? "Declared authentication endpoints and manual POST validation notes improved discovery and planning, but the automated run still stayed read-only and did not submit credentials."
+          : "Declared authentication endpoints and manual POST validation notes were recorded for operator guidance only because the automated run stayed read-only against the verified hostname."
+      ];
+    }
+
+    if (developmentModeActive) {
+      return [
+        "Declared authentication endpoints were used to improve discovery and planning, but the run still stayed read-only and did not submit credentials."
+      ];
+    }
+
+    return [
+      "Declared authentication endpoints were treated as passive metadata only because this run targeted a verified public hostname outside the development fast path."
+    ];
+  }
+
   private toRedactedAuthProfile(
     profile: AuthorizedSecurityTestAuthProfile
   ): AuthorizedSecurityTestAuthProfileSummary {
@@ -4624,7 +5153,12 @@ export class AuthorizedSecurityTestingService {
     };
   }
 
-  private toBaseline(scan: WebsiteScanResult): AuthorizedSecurityBaseline {
+  private toBaseline(
+    scan: WebsiteScanResult,
+    authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptor[],
+    warnings: string[] = [],
+    manualFormValidation?: AuthorizedSecurityManualFormValidation
+  ): AuthorizedSecurityBaseline {
     return {
       requestedUrl: scan.requestedUrl,
       finalUrl: scan.finalUrl,
@@ -4633,7 +5167,9 @@ export class AuthorizedSecurityTestingService {
       maxPages: scan.maxPages,
       securityScore: scan.securityScore,
       grade: scan.grade,
-      passiveWarnings: scan.warnings
+      passiveWarnings: Array.from(new Set([...scan.warnings, ...warnings])),
+      declaredAuthEndpoints: authEndpointDescriptors,
+      manualFormValidation
     };
   }
 
@@ -4931,7 +5467,8 @@ export class AuthorizedSecurityTestingService {
     method: DomainOwnershipVerificationMethod;
     challengeToken: string;
     challengeDetails: Record<string, unknown>;
-  }): Promise<{
+  },
+  workspaceId: string): Promise<{
     verified: boolean;
     evidence: Record<string, unknown>;
   }> {
@@ -4941,7 +5478,10 @@ export class AuthorizedSecurityTestingService {
           verification.challengeDetails.verificationUrl ??
             `https://${verification.hostname}/.well-known/cognexa-security-test.txt`
         );
-        const response = await this.fetchVerificationUrl(new URL(verificationUrl));
+        const response = await this.fetchVerificationUrl(
+          new URL(verificationUrl),
+          workspaceId
+        );
         const body = (await response.text()).trim();
         const expected = String(verification.challengeDetails.expectedValue);
         return {
@@ -4957,7 +5497,10 @@ export class AuthorizedSecurityTestingService {
         const verificationUrl = String(
           verification.challengeDetails.verificationUrl ?? `https://${verification.hostname}/`
         );
-        const response = await this.fetchVerificationUrl(new URL(verificationUrl));
+        const response = await this.fetchVerificationUrl(
+          new URL(verificationUrl),
+          workspaceId
+        );
         const body = await response.text();
         const expectedValue = String(verification.challengeDetails.expectedValue);
         const matched = new RegExp(
@@ -4985,7 +5528,15 @@ export class AuthorizedSecurityTestingService {
           verification.challengeDetails.expectedValue ??
             `cognexa-verification=${verification.challengeToken}`
         );
-        const records = await this.resolveTxtImpl(recordName).catch(() => []);
+        const records = await (
+          this.privateMode
+            ? this.privateMode.resolveTxtForWorkspace(
+                workspaceId,
+                "external_url_access",
+                recordName
+              )
+            : this.resolveTxtImpl(recordName)
+        ).catch(() => []);
         const flattened = records.map((parts) => parts.join(""));
         return {
           verified: flattened.includes(expectedValue),
@@ -4998,16 +5549,33 @@ export class AuthorizedSecurityTestingService {
     }
   }
 
-  private async fetchVerificationUrl(url: URL): Promise<Response> {
-    await this.assertSafePublicUrl(url);
-    const response = await this.fetchImpl(url, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        Accept: "text/html,text/plain;q=0.9,*/*;q=0.5",
-        "User-Agent": "CognexaSecurityAILab/1.0 (Domain Verification)"
-      }
-    });
+  private async fetchVerificationUrl(
+    url: URL,
+    workspaceId: string
+  ): Promise<Response> {
+    await this.assertSafePublicUrl(url, workspaceId);
+    const response = this.privateMode
+      ? await this.privateMode.fetchForWorkspace(
+          workspaceId,
+          "external_url_access",
+          url,
+          {
+            method: "GET",
+            redirect: "follow",
+            headers: {
+              Accept: "text/html,text/plain;q=0.9,*/*;q=0.5",
+              "User-Agent": "CognexaSecurityAILab/1.0 (Domain Verification)"
+            }
+          }
+        )
+      : await this.fetchImpl(url, {
+          method: "GET",
+          redirect: "follow",
+          headers: {
+            Accept: "text/html,text/plain;q=0.9,*/*;q=0.5",
+            "User-Agent": "CognexaSecurityAILab/1.0 (Domain Verification)"
+          }
+        });
 
     return response;
   }
@@ -5024,12 +5592,22 @@ export class AuthorizedSecurityTestingService {
         return "Probe query-driven endpoints for error-based SQL handling";
       case "xss":
         return "Check inert reflection markers for output encoding gaps";
+      case "csrf":
+        return "Review cookie-backed forms and APIs for CSRF protections";
       case "authentication":
         return "Verify anonymous access challenges on protected-looking routes";
       case "authorization":
         return "Compare high- and lower-trust profiles on privileged routes";
       case "api_security":
         return "Inspect API schemas, differential access, and read-only endpoint hardening";
+      case "ssrf":
+        return "Inspect URL-handling features for server-side retrieval behavior";
+      case "open_redirect":
+        return "Check redirect-style parameters for off-origin navigation control";
+      case "business_logic":
+        return "Validate workflow and approval routes for client-driven state flaws";
+      case "oauth_flow":
+        return "Review OAuth and OIDC authorization flows for redirect and state weaknesses";
       case "waf":
         return "Review edge normalization consistency with benign request variants";
       case "session_management":
@@ -5045,12 +5623,22 @@ export class AuthorizedSecurityTestingService {
         return "Identify response changes that suggest unsafe server-side query construction.";
       case "xss":
         return "Confirm whether non-executable HTML markers are encoded before rendering.";
+      case "csrf":
+        return "Determine whether cookie-backed state-changing flows expose weak anti-CSRF boundaries.";
       case "authentication":
         return "Ensure anonymous users are challenged before privileged content is served.";
       case "authorization":
         return "Ensure reduced-trust profiles do not receive the same content as privileged profiles.";
       case "api_security":
         return "Detect deeper API weaknesses such as data leakage, weak access control, unsafe parameter handling, and absent throttling signals.";
+      case "ssrf":
+        return "Identify URL-driven features that appear to fetch server-side resources on behalf of the user.";
+      case "open_redirect":
+        return "Determine whether redirect parameters can trigger or prepare unsafe off-origin navigation.";
+      case "business_logic":
+        return "Identify workflow states, approvals, or checkout steps that trust client-controlled progression too heavily.";
+      case "oauth_flow":
+        return "Detect weak redirect validation, risky OAuth grants, or missing state handling in OAuth and OIDC entry points.";
       case "waf":
         return "Detect inconsistent edge handling for semantically equivalent benign requests.";
       case "session_management":
@@ -5066,12 +5654,22 @@ export class AuthorizedSecurityTestingService {
         return "Use read-only GET requests with benign quote mutations against discovered query parameters.";
       case "xss":
         return "Use inert HTML markers that never contain executable script.";
+      case "csrf":
+        return "Re-fetch stateful forms and API descriptions with read-only GET requests and inspect cookies, token markers, and documented mutation flows.";
       case "authentication":
         return "Send anonymous GET requests to protected-looking routes and check for a proper challenge.";
       case "authorization":
         return "Compare GET responses from high- and lower-trust profiles without changing any state.";
       case "api_security":
         return "Use read-only GET and OPTIONS requests to compare API responses, inspect public schemas, and safely mutate inert query values.";
+      case "ssrf":
+        return "Use read-only same-origin URL probes on URL-handling features and compare responses for server-side fetch behavior.";
+      case "open_redirect":
+        return "Use GET requests with controlled off-origin redirect targets and confirm whether they are rejected or blocked.";
+      case "business_logic":
+        return "Use read-only GET requests to compare workflow-step views and privilege-differential responses without submitting any state changes.";
+      case "oauth_flow":
+        return "Use read-only GET requests to fetch OAuth metadata, inspect authorize entry points, and test redirect_uri validation without completing any login flow.";
       case "waf":
         return "Replay safe, normalized query variants and compare status consistency.";
       case "session_management":
@@ -5158,11 +5756,17 @@ export class AuthorizedSecurityTestingService {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
-  private async assertSafePublicUrl(url: URL): Promise<void> {
-    await this.classifyTargetUrl(url);
+  private async assertSafePublicUrl(
+    url: URL,
+    workspaceId?: string
+  ): Promise<void> {
+    await this.classifyTargetUrl(url, workspaceId);
   }
 
-  private async classifyTargetUrl(url: URL): Promise<
+  private async classifyTargetUrl(
+    url: URL,
+    workspaceId?: string
+  ): Promise<
     | {
         mode: "public";
       }
@@ -5188,10 +5792,22 @@ export class AuthorizedSecurityTestingService {
       });
     }
 
-    const records = await this.lookupHost(url.hostname, {
-      all: true,
-      verbatim: true
-    }).catch(() => []);
+    const records = await (
+      this.privateMode && workspaceId
+        ? this.privateMode.lookupForWorkspace(
+            workspaceId,
+            "external_url_access",
+            url.hostname,
+            {
+              all: true,
+              verbatim: true
+            }
+          )
+        : this.lookupHost(url.hostname, {
+            all: true,
+            verbatim: true
+          })
+    ).catch(() => []);
 
     if (records.length === 0) {
       throw new AppError("Unable to resolve target hostname.", 400, {

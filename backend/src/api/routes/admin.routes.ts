@@ -18,6 +18,10 @@ import {
   POLICY_MODES,
   POLICY_SCOPE_TYPES
 } from "../../policy/policy.types";
+import {
+  PRIVATE_MODE_OUTBOUND_STRATEGIES,
+  TLS_FINGERPRINT_PROFILES
+} from "../../services/private-mode/private-mode.types";
 
 export function createAdminRoutes(
   controller: AdminController,
@@ -81,8 +85,51 @@ export function createAdminRoutes(
     method: z.enum(["dns_txt", "http_file", "html_meta"]).default("dns_txt"),
     devModeBypass: z.boolean().optional()
   });
-  const domainVerificationCheckSchema = z.object({
-    devModeBypass: z.boolean().optional()
+  const relayNodeSchema = z.object({
+    id: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    host: z.string().trim().min(1),
+    port: z.coerce.number().int().positive(),
+    publicKey: z.string().trim().min(1),
+    region: z.string().trim().min(1),
+    provider: z.string().trim().min(1),
+    status: z.enum(["online", "offline", "unknown"]).default("unknown"),
+    lastCheckedAt: z.string().datetime().optional()
+  });
+  const privateModeConfigSchema = z.object({
+    mode: z.enum(["direct", "cloaked"]).optional(),
+    outboundStrategy: z.enum(PRIVATE_MODE_OUTBOUND_STRATEGIES).optional(),
+    vpnRelays: z.array(relayNodeSchema).max(12).optional(),
+    torControlPort: z.coerce.number().int().positive().max(65535).optional(),
+    torSocksPort: z.coerce.number().int().positive().max(65535).optional(),
+    dnsOverTor: z.boolean().optional(),
+    exitGeographyPreference: z.array(z.string().trim().min(1)).max(12).optional(),
+    circuitRotationInterval: z.coerce.number().int().positive().max(86400).optional(),
+    tlsFingerprintProfile: z.enum(TLS_FINGERPRINT_PROFILES).optional(),
+    requestTimingJitter: z.coerce.number().int().min(0).max(10000).optional(),
+    enabledCategories: z.array(z.enum(POLICY_CATEGORIES)).min(1).max(10).optional()
+  });
+  const domainVerificationCheckSchema = z
+    .object({
+      devModeBypass: z.boolean().optional()
+    })
+    .default({});
+  const authEndpointDescriptorSchema = z.object({
+    type: z.literal("auth_api"),
+    name: z.string().trim().min(1),
+    entryUrl: z.string().trim().min(1),
+    endpoint: z.string().trim().min(1),
+    method: z.literal("POST").optional(),
+    contentType: z.string().trim().min(1).max(120).optional(),
+    fields: z.array(z.string().trim().min(1)).min(1).max(12),
+    tokenFields: z.array(z.string().trim().min(1)).max(8).optional(),
+    stagingOnly: z.boolean().optional(),
+    productionMode: z.literal("passive_only").optional()
+  });
+  const manualFormValidationSchema = z.object({
+    rateLimitPerMinute: z.coerce.number().int().min(1).max(60).default(5),
+    credentialLabels: z.array(z.string().trim().min(1)).min(1).max(8),
+    notes: z.string().trim().min(1).max(400).optional()
   });
   const authorizedTestingRunSchema = z.object({
     verificationId: z.string().uuid().optional(),
@@ -95,14 +142,19 @@ export function createAdminRoutes(
         z.enum([
           "sql_injection",
           "xss",
+          "csrf",
           "authentication",
           "authorization",
           "api_security",
+          "ssrf",
+          "open_redirect",
+          "business_logic",
+          "oauth_flow",
           "waf",
           "session_management"
         ])
       )
-      .max(7)
+      .max(12)
       .optional(),
     authProfiles: z
       .array(
@@ -114,6 +166,12 @@ export function createAdminRoutes(
         })
       )
       .max(4)
+      .optional(),
+    authEndpointDescriptors: z
+      .array(authEndpointDescriptorSchema)
+      .max(6)
+      .optional(),
+    manualFormValidation: manualFormValidationSchema
       .optional()
   });
 
@@ -142,6 +200,95 @@ export function createAdminRoutes(
     }),
     validateBody(securityReviewSchema),
     asyncHandler(controller.runSecurityReview)
+  );
+  router.get(
+    "/private-mode/config",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.config",
+      action: "GET /admin/private-mode/config"
+    }),
+    asyncHandler(controller.getPrivateModeConfig)
+  );
+  router.put(
+    "/private-mode/config",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.config",
+      action: "PUT /admin/private-mode/config"
+    }),
+    validateBody(privateModeConfigSchema),
+    asyncHandler(controller.updatePrivateModeConfig)
+  );
+  router.post(
+    "/private-mode/activate",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.activate",
+      action: "POST /admin/private-mode/activate"
+    }),
+    validateBody(privateModeConfigSchema),
+    asyncHandler(controller.activatePrivateMode)
+  );
+  router.post(
+    "/private-mode/deactivate",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.activate",
+      action: "POST /admin/private-mode/deactivate"
+    }),
+    validateBody(
+      z.object({
+        sessionId: z.string().uuid().optional()
+      })
+    ),
+    asyncHandler(controller.deactivatePrivateMode)
+  );
+  router.get(
+    "/private-mode/session",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.session",
+      action: "GET /admin/private-mode/session"
+    }),
+    asyncHandler(controller.getPrivateModeSession)
+  );
+  router.post(
+    "/private-mode/verify",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.verify",
+      action: "POST /admin/private-mode/verify"
+    }),
+    asyncHandler(controller.verifyPrivateMode)
+  );
+  router.post(
+    "/private-mode/leak-test",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.verify",
+      action: "POST /admin/private-mode/leak-test"
+    }),
+    asyncHandler(controller.leakTestPrivateMode)
+  );
+  router.post(
+    "/private-mode/rotate",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.rotate",
+      action: "POST /admin/private-mode/rotate"
+    }),
+    validateBody(
+      z.object({
+        sessionId: z.string().uuid().optional()
+      })
+    ),
+    asyncHandler(controller.rotatePrivateModeCircuit)
+  );
+  router.get(
+    "/private-mode/exit-logs",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.private-mode.exit-logs",
+      action: "GET /admin/private-mode/exit-logs"
+    }),
+    validateQuery(
+      z.object({
+        limit: z.coerce.number().int().min(1).max(200).default(50)
+      })
+    ),
+    asyncHandler(controller.listPrivateModeExitLogs)
   );
   router.get(
     "/authorized-testing/verifications",

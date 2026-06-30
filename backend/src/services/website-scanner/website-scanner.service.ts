@@ -5,6 +5,7 @@ import { AccessContext } from "../../authorization/authorization.types";
 import { AppError } from "../../utils/app-error";
 import { AuthorizationService } from "../authorization/authorization.service";
 import { PolicyService } from "../policy/policy.service";
+import { CloakingService } from "../private-mode/cloaking.service";
 import {
   BrowserCrawlResult,
   BrowserCrawler,
@@ -234,6 +235,7 @@ interface WebsiteScannerServiceOptions {
   fetchImpl?: typeof fetch;
   lookupHost?: typeof lookup;
   browserCrawler?: BrowserCrawler;
+  privateMode?: CloakingService;
 }
 
 export class WebsiteScannerService {
@@ -241,6 +243,7 @@ export class WebsiteScannerService {
   private readonly fetchImpl: typeof fetch;
   private readonly lookupHost: typeof lookup;
   private readonly browserCrawler?: BrowserCrawler;
+  private readonly privateMode?: CloakingService;
 
   constructor(
     private readonly authorization: AuthorizationService,
@@ -252,6 +255,7 @@ export class WebsiteScannerService {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.lookupHost = options.lookupHost ?? lookup;
     this.browserCrawler = options.browserCrawler;
+    this.privateMode = options.privateMode;
   }
 
   async scanWebsite(
@@ -281,7 +285,7 @@ export class WebsiteScannerService {
       }
     });
 
-    await this.assertSafePublicUrl(requestedUrl);
+    await this.assertSafePublicUrl(requestedUrl, actor.workspaceId);
 
     let root: RedirectedResponse | null = null;
     let rootFetchError: AppError | null = null;
@@ -289,7 +293,7 @@ export class WebsiteScannerService {
     try {
       root = await this.fetchFollowingRedirects(requestedUrl, true, {
         allowErrorStatus: true
-      });
+      }, actor.workspaceId);
     } catch (error) {
       if (!(error instanceof AppError)) {
         throw error;
@@ -317,6 +321,7 @@ export class WebsiteScannerService {
     let effectiveHeaders: WebsiteScanResult["headers"];
     let effectiveCookies: CookieAssessment;
     let crawl: CrawlOutcome;
+    let clientRenderedAuthFinding: WebsiteScanFinding | null = null;
     let analysis: WebsiteScanResult["analysis"] = {
       mode: "http",
       browserAttempted: browserAttempt.attempted,
@@ -347,6 +352,14 @@ export class WebsiteScannerService {
         page: rootPage,
         html: rootHtml
       });
+      if (!rootResponseAssessment.accessChallengeDetected) {
+        clientRenderedAuthFinding = await this.inspectClientRenderedAuthSurface({
+          pageUrl: finalUrl,
+          html: rootHtml,
+          rootPage,
+          workspaceId: actor.workspaceId
+        });
+      }
 
       effectiveFinalUrl = finalUrl;
       effectiveRootPage = rootPage;
@@ -532,6 +545,7 @@ export class WebsiteScannerService {
       effectiveRootPage.statusCode >= 400
         ? this.createEmptyExposureAssessment()
         : await this.inspectExposedServices(effectiveFinalUrl, crawl.pages);
+    const explicitLoginSurfaceDetected = this.hasExplicitLoginSurface(crawl.pages);
     const findings = this.buildFindings({
       rootPage: effectiveRootPage,
       pages: crawl.pages,
@@ -540,7 +554,9 @@ export class WebsiteScannerService {
       transport,
       rootAccessChallengeDetected: effectiveRootResponseAssessment.accessChallengeDetected,
       tlsCertificateValidationError: rootTlsCertificateValidationError,
-      exposureFindings: exposureAssessment.findings
+      exposureFindings: exposureAssessment.findings,
+      clientRenderedAuthFinding:
+        explicitLoginSurfaceDetected ? null : clientRenderedAuthFinding
     });
     const findingCounts = this.countFindings(findings);
     const securityScore = this.calculateSecurityScore(findings);
@@ -1811,7 +1827,10 @@ export class WebsiteScannerService {
 
   private async readResponsePreview(
     response: Response,
-    maxBytes: number
+    maxBytes: number,
+    options: {
+      ignoreLargeContentLength?: boolean;
+    } = {}
   ): Promise<ResponsePreview> {
     const contentType = this.getContentType(response);
     const rawContentLength = response.headers.get("content-length");
@@ -1830,7 +1849,9 @@ export class WebsiteScannerService {
 
     if (
       !this.isPreviewTextLike(contentType) ||
-      (contentLength !== null && contentLength > maxBytes * 4)
+      (!options.ignoreLargeContentLength &&
+        contentLength !== null &&
+        contentLength > maxBytes * 4)
     ) {
       await response.body.cancel().catch(() => undefined);
       return {
@@ -1921,6 +1942,152 @@ export class WebsiteScannerService {
     };
   }
 
+  private async inspectClientRenderedAuthSurface(input: {
+    pageUrl: URL;
+    html: string;
+    rootPage: PageAnalysis;
+    workspaceId: string;
+  }): Promise<WebsiteScanFinding | null> {
+    if (input.rootPage.loginFormCount > 0) {
+      return null;
+    }
+
+    const sameOriginScripts = [
+      ...new Map(
+        this.extractExternalScriptUrls(input.html, input.pageUrl)
+          .filter((scriptUrl) => scriptUrl.origin === input.pageUrl.origin)
+          .map((scriptUrl) => [scriptUrl.toString(), scriptUrl])
+      ).values()
+    ].slice(0, 4);
+
+    if (sameOriginScripts.length === 0) {
+      return null;
+    }
+
+    const detectedMarkers = new Set<string>();
+    const inspectedBundles: string[] = [];
+
+    for (const scriptUrl of sameOriginScripts) {
+      try {
+        const response = await this.fetchFollowingRedirects(
+          scriptUrl,
+          true,
+          {
+            allowErrorStatus: true
+          },
+          input.workspaceId
+        );
+
+        if (response.finalUrl.origin !== input.pageUrl.origin) {
+          response.response.body?.cancel();
+          continue;
+        }
+
+        if (response.response.status >= 400) {
+          response.response.body?.cancel();
+          continue;
+        }
+
+        const preview = await this.readResponsePreview(response.response, 32768, {
+          ignoreLargeContentLength: true
+        });
+        if (!preview.preview) {
+          continue;
+        }
+
+        const markers = this.detectClientRenderedAuthMarkers(preview.preview);
+        if (markers.length === 0) {
+          continue;
+        }
+
+        inspectedBundles.push(
+          `bundle=${response.finalUrl.pathname || response.finalUrl.toString()}`
+        );
+        for (const marker of markers) {
+          detectedMarkers.add(marker);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    const markerList = [...detectedMarkers];
+    const credentialMarkers = markerList.filter((marker) =>
+      ["login-route", "password-field", "user-identifier"].includes(marker)
+    );
+    const flowMarkers = markerList.filter((marker) =>
+      ["credential-post", "session-token"].includes(marker)
+    );
+
+    if (credentialMarkers.length === 0 || flowMarkers.length === 0) {
+      return null;
+    }
+
+    return {
+      id: "forms-client-rendered-auth-flow",
+      severity: "info",
+      category: "forms",
+      title: "Client-rendered authentication flow detected",
+      summary:
+        "The entry page did not expose a static password form, but same-origin application bundles referenced login, credential, and session flow markers. The authentication boundary appears to be rendered client-side and may be missed by HTML-only form discovery.",
+      remediation:
+        "Expose a stable login route or semantic form in the initial HTML for test environments, or publish an explicit scanner-visible authentication descriptor so authorized tooling can discover the sign-in boundary without guessing client-side routes.",
+      pageUrl: input.pageUrl.toString(),
+      evidence: [
+        `page=${input.pageUrl.pathname || "/"}`,
+        "staticPasswordForm=absent",
+        ...inspectedBundles.slice(0, 2),
+        `markers=${markerList.slice(0, 4).join(",")}`
+      ]
+    };
+  }
+
+  private detectClientRenderedAuthMarkers(scriptBody: string): string[] {
+    const markers: Array<{
+      id: string;
+      pattern: RegExp;
+    }> = [
+      {
+        id: "login-route",
+        pattern: /(?:\/login\b|\/signin\b|\bauthenticate\b|\bloginrequestdata\b|\bsign[\s_-]?in\b)/i
+      },
+      {
+        id: "password-field",
+        pattern: /\bpassword\b/i
+      },
+      {
+        id: "user-identifier",
+        pattern: /\b(?:userid|username|corporateid|corporate id|user id)\b/i
+      },
+      {
+        id: "credential-post",
+        pattern: /\b(?:httpclient|axios)\s*\.\s*post\b|\bfetch\s*\(/i
+      },
+      {
+        id: "session-token",
+        pattern: /\b(?:csrf|xsrf|sessionid|reqsessionid|access_token|id_token)\b/i
+      }
+    ];
+
+    return markers
+      .filter((marker) => marker.pattern.test(scriptBody))
+      .map((marker) => marker.id);
+  }
+
+  private hasExplicitLoginSurface(pages: PageAnalysis[]): boolean {
+    return pages.some((page) => {
+      if (page.loginFormCount > 0) {
+        return true;
+      }
+
+      try {
+        return /(login|signin|auth)/i.test(new URL(page.url).pathname);
+      } catch {
+        return false;
+      }
+    });
+  }
+
   private buildFindings(input: {
     rootPage: PageAnalysis;
     pages: PageAnalysis[];
@@ -1930,6 +2097,7 @@ export class WebsiteScannerService {
     rootAccessChallengeDetected: boolean;
     tlsCertificateValidationError?: string | null;
     exposureFindings: WebsiteScanFinding[];
+    clientRenderedAuthFinding?: WebsiteScanFinding | null;
   }): WebsiteScanFinding[] {
     const findings: WebsiteScanFinding[] = [];
     const findingIds = new Set<string>();
@@ -1990,7 +2158,15 @@ export class WebsiteScannerService {
         });
       }
 
+      if (input.clientRenderedAuthFinding) {
+        pushFinding(input.clientRenderedAuthFinding);
+      }
+
       return this.sortFindings(findings);
+    }
+
+    if (input.clientRenderedAuthFinding) {
+      pushFinding(input.clientRenderedAuthFinding);
     }
 
     if (input.transport.finalProtocol !== "https") {
@@ -2990,6 +3166,24 @@ export class WebsiteScannerService {
     return links;
   }
 
+  private extractExternalScriptUrls(html: string, pageUrl: URL): URL[] {
+    const scriptUrls: URL[] = [];
+    const matches = html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi);
+    for (const match of matches) {
+      const src = match[1]?.trim();
+      if (!src) {
+        continue;
+      }
+
+      const resolved = this.resolveUrl(pageUrl, src);
+      if (resolved) {
+        scriptUrls.push(resolved);
+      }
+    }
+
+    return scriptUrls;
+  }
+
   private extractScriptInsights(
     html: string,
     pageUrl: URL
@@ -3001,28 +3195,14 @@ export class WebsiteScannerService {
     const inlineScriptCount = Array.from(
       html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>/gi)
     ).length;
-
-    let externalScriptCount = 0;
-    let thirdPartyScriptCount = 0;
-
-    const matches = html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi);
-    for (const match of matches) {
-      const src = match[1]?.trim();
-      if (!src) {
-        continue;
-      }
-
-      externalScriptCount += 1;
-      const resolved = this.resolveUrl(pageUrl, src);
-      if (resolved && resolved.origin !== pageUrl.origin) {
-        thirdPartyScriptCount += 1;
-      }
-    }
+    const externalScripts = this.extractExternalScriptUrls(html, pageUrl);
 
     return {
       inlineScriptCount,
-      externalScriptCount,
-      thirdPartyScriptCount
+      externalScriptCount: externalScripts.length,
+      thirdPartyScriptCount: externalScripts.filter(
+        (scriptUrl) => scriptUrl.origin !== pageUrl.origin
+      ).length
     };
   }
 
@@ -3197,13 +3377,14 @@ export class WebsiteScannerService {
     expectBody = true,
     options: {
       allowErrorStatus?: boolean;
-    } = {}
+    } = {},
+    workspaceId?: string
   ): Promise<RedirectedResponse> {
     let current = new URL(url.toString());
 
     for (let redirectCount = 0; redirectCount < 6; redirectCount += 1) {
-      await this.assertSafePublicUrl(current);
-      const response = await this.fetchSingle(current);
+      await this.assertSafePublicUrl(current, workspaceId);
+      const response = await this.fetchSingle(current, workspaceId);
 
       if (this.isRedirectStatus(response.status)) {
         const location = response.headers.get("location");
@@ -3259,11 +3440,33 @@ export class WebsiteScannerService {
     return [301, 302, 303, 307, 308].includes(statusCode);
   }
 
-  private async fetchSingle(url: URL): Promise<Response> {
+  private async fetchSingle(url: URL, workspaceId?: string): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
+      if (this.privateMode && workspaceId) {
+        return await this.privateMode.fetchForWorkspace(
+          workspaceId,
+          "external_url_access",
+          url,
+          {
+            method: "GET",
+            redirect: "manual",
+            signal: controller.signal,
+            headers: {
+              Accept: "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.4,*/*;q=0.1",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+              "Upgrade-Insecure-Requests": "1",
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+            }
+          }
+        );
+      }
+
       return await this.fetchImpl(url, {
         method: "GET",
         redirect: "manual",
@@ -3399,7 +3602,10 @@ export class WebsiteScannerService {
     };
   }
 
-  private async assertSafePublicUrl(url: URL): Promise<void> {
+  private async assertSafePublicUrl(
+    url: URL,
+    workspaceId?: string
+  ): Promise<void> {
     if (
       this.isBlockedHostname(url.hostname) &&
       !this.allowDevelopmentLocalTargets
@@ -3413,10 +3619,22 @@ export class WebsiteScannerService {
       return;
     }
 
-    const records = await this.lookupHost(url.hostname, {
-      all: true,
-      verbatim: true
-    }).catch(() => []);
+    const records = await (
+      this.privateMode && workspaceId
+        ? this.privateMode.lookupForWorkspace(
+            workspaceId,
+            "external_url_access",
+            url.hostname,
+            {
+              all: true,
+              verbatim: true
+            }
+          )
+        : this.lookupHost(url.hostname, {
+            all: true,
+            verbatim: true
+          })
+    ).catch(() => []);
 
     if (records.length === 0) {
       throw new AppError("Unable to resolve website hostname.", 400, {

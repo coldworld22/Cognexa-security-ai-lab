@@ -247,6 +247,127 @@ export interface AdminNetworkEvent {
   snapshot?: AdminNetworkScan;
 }
 
+export type PrivateModeState = "direct" | "cloaked";
+export type PrivateModeOutboundStrategy =
+  | "tor"
+  | "vpn-chain"
+  | "hybrid"
+  | "rotating-proxy";
+export type PrivateModeTlsFingerprintProfile = "browser" | "curl" | "random";
+
+export interface PrivateModeRelayNode {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  publicKey: string;
+  region: string;
+  provider: string;
+  status: "online" | "offline" | "unknown";
+  lastCheckedAt?: string;
+}
+
+export interface PrivateModeConfig {
+  workspaceId: string;
+  mode: PrivateModeState;
+  outboundStrategy: PrivateModeOutboundStrategy;
+  vpnRelays: PrivateModeRelayNode[];
+  torControlPort: number;
+  torSocksPort: number;
+  dnsOverTor: boolean;
+  exitGeographyPreference: string[];
+  circuitRotationInterval: number;
+  tlsFingerprintProfile: PrivateModeTlsFingerprintProfile;
+  requestTimingJitter: number;
+  enabledCategories: PolicyCategory[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PrivateModeSession {
+  id: string;
+  workspaceId: string;
+  strategy: PrivateModeOutboundStrategy;
+  exitNodes: string[];
+  circuitIds: string[];
+  startedAt: string;
+  endedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PrivateModeCircuitStatus {
+  sessionId: string;
+  workspaceId: string;
+  strategy: PrivateModeOutboundStrategy;
+  active: boolean;
+  exitNodes: string[];
+  circuitIds: string[];
+  lastRotatedAt?: string;
+}
+
+export interface PrivateModeExitLog {
+  id: string;
+  sessionId: string;
+  workspaceId: string;
+  exitIp: string;
+  exitRegion: string;
+  targetHost: string;
+  requestType: string;
+  timestamp: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PrivateModeConnectionIdentity {
+  ip: string | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+  timezone: string | null;
+  organization: string | null;
+  asn: string | null;
+  network: "ipv4" | "ipv6" | "unknown";
+  isTorExit: boolean | null;
+}
+
+export interface PrivateModeVerificationResult {
+  exitIp: string | null;
+  isCloaked: boolean;
+  leaks: string[];
+  directIdentity: PrivateModeConnectionIdentity | null;
+  exitIdentity: PrivateModeConnectionIdentity | null;
+  dnsTransport: "local" | "tor" | "system";
+  verificationCategory: PolicyCategory;
+  transportVerified: boolean;
+  advisories: string[];
+}
+
+export interface PrivateModeSessionState {
+  session: PrivateModeSession | null;
+  circuit: PrivateModeCircuitStatus | null;
+  verification: PrivateModeVerificationResult | null;
+  routeVerified: boolean;
+  verificationError: string | null;
+}
+
+export interface PrivateModeLeakTestResult {
+  testedAt: string;
+  strategy: PrivateModeOutboundStrategy | "direct";
+  directIp: string | null;
+  exitIp: string | null;
+  exitRegion: string | null;
+  dnsTransport: "local" | "tor" | "system";
+  isTorExit: boolean | null;
+  leaks: string[];
+  directIdentity: PrivateModeConnectionIdentity | null;
+  exitIdentity: PrivateModeConnectionIdentity | null;
+  verificationCategory: PolicyCategory;
+  transportVerified: boolean;
+  advisories: string[];
+}
+
 export type WebsiteFindingSeverity = "info" | "low" | "medium" | "high";
 export type WebsiteFindingCategory =
   | "transport"
@@ -522,9 +643,14 @@ export type DomainOwnershipVerificationStatus =
 export type AuthorizedSecurityTestModule =
   | "sql_injection"
   | "xss"
+  | "csrf"
   | "authentication"
   | "authorization"
   | "api_security"
+  | "ssrf"
+  | "open_redirect"
+  | "business_logic"
+  | "oauth_flow"
   | "waf"
   | "session_management";
 
@@ -543,7 +669,10 @@ export type AuthorizedApiVulnerabilityType =
   | "data_leakage"
   | "sql_injection"
   | "xss"
-  | "csrf";
+  | "csrf"
+  | "ssrf"
+  | "open_redirect"
+  | "oauth_flow";
 export type AuthorizedSecurityFindingDisposition =
   | "confirmed"
   | "needs_review"
@@ -584,6 +713,44 @@ export interface AuthorizedSecurityTestAuthProfileSummary {
   cookieNames: string[];
 }
 
+export interface AuthorizedSecurityTestAuthEndpointDescriptorInput {
+  type: "auth_api";
+  name: string;
+  entryUrl: string;
+  endpoint: string;
+  method?: "POST";
+  contentType?: string;
+  fields: string[];
+  tokenFields?: string[];
+  stagingOnly?: boolean;
+  productionMode?: "passive_only";
+}
+
+export interface AuthorizedSecurityManualFormValidationInput {
+  rateLimitPerMinute?: number;
+  credentialLabels?: string[];
+  notes?: string;
+}
+
+export interface AuthorizedSecurityManualFormValidation {
+  rateLimitPerMinute: number;
+  credentialLabels: string[];
+  notes?: string;
+}
+
+export interface AuthorizedSecurityTestAuthEndpointDescriptor {
+  type: "auth_api";
+  name: string;
+  entryUrl: string;
+  endpoint: string;
+  method: "POST";
+  contentType: string;
+  fields: string[];
+  tokenFields: string[];
+  stagingOnly: boolean;
+  productionMode: "passive_only";
+}
+
 export interface AuthorizedSecurityPlanStep {
   id: string;
   category: AuthorizedSecurityTestModule;
@@ -608,6 +775,8 @@ export interface AuthorizedSecurityBaseline {
   securityScore: number;
   grade: "A" | "B" | "C" | "D" | "F";
   passiveWarnings: string[];
+  declaredAuthEndpoints: AuthorizedSecurityTestAuthEndpointDescriptor[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidation;
 }
 
 export interface AuthorizedApiFindingDetails {
@@ -773,6 +942,44 @@ export interface AuthorizedSecurityTestRunSummary {
   riskLevel: "low" | "medium" | "high" | "critical";
   findings: number;
   highSeverityFindings: number;
+}
+
+export interface AdvancedPenetrationTestRunSummary {
+  runId: string;
+  taskId?: string;
+  agentId?: string;
+  target: string;
+  status: AgentTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  vulnerabilities: number;
+  attackChains: number;
+  finalSummary?: string;
+}
+
+export interface AdvancedPenetrationTestAuditEntry {
+  id: string;
+  action: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface AdvancedPenetrationTestRunDetail {
+  runId: string;
+  taskId?: string;
+  agentId?: string;
+  target: string;
+  status: AgentTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  finalSummary?: string;
+  context: Record<string, unknown>;
+  auditTrail: AdvancedPenetrationTestAuditEntry[];
+  report?: Record<string, unknown>;
 }
 
 export interface MemoryContext {

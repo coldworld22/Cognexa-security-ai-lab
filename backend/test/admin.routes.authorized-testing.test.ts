@@ -112,7 +112,8 @@ function createReport(
       maxPages: 4,
       securityScore: 64,
       grade: "C",
-      passiveWarnings: ["Session cookies are missing SameSite."]
+      passiveWarnings: ["Session cookies are missing SameSite."],
+      declaredAuthEndpoints: []
     },
     plan: [
       {
@@ -448,7 +449,26 @@ test("authorized testing admin routes shape validated requests and responses", a
             session: "cookie-value"
           }
         }
-      ]
+      ],
+      authEndpointDescriptors: [
+        {
+          type: "auth_api",
+          name: "corporate-login",
+          entryUrl: "https://example.com/login",
+          endpoint: "https://example.com/api/login",
+          method: "POST",
+          contentType: "application/x-www-form-urlencoded",
+          fields: ["corporateId", "userId", "password"],
+          tokenFields: ["mfsapiin"],
+          stagingOnly: true,
+          productionMode: "passive_only"
+        }
+      ],
+      manualFormValidation: {
+        rateLimitPerMinute: "5",
+        credentialLabels: ["qa-corporate-admin"],
+        notes: "Manual POST validation only."
+      }
     })
   });
   const runTestBody = await readJson(runTest);
@@ -470,7 +490,26 @@ test("authorized testing admin routes shape validated requests and responses", a
           session: "cookie-value"
         }
       }
-    ]
+    ],
+    authEndpointDescriptors: [
+      {
+        type: "auth_api",
+        name: "corporate-login",
+        entryUrl: "https://example.com/login",
+        endpoint: "https://example.com/api/login",
+        method: "POST",
+        contentType: "application/x-www-form-urlencoded",
+        fields: ["corporateId", "userId", "password"],
+        tokenFields: ["mfsapiin"],
+        stagingOnly: true,
+        productionMode: "passive_only"
+      }
+    ],
+    manualFormValidation: {
+      rateLimitPerMinute: 5,
+      credentialLabels: ["qa-corporate-admin"],
+      notes: "Manual POST validation only."
+    }
   });
   assert.equal(runTestBody.runId, RUN_ID);
 

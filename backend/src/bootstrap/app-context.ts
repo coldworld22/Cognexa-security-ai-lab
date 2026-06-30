@@ -15,6 +15,7 @@ import { MemoryService } from "../services/memory/memory.service";
 import { EndpointMonitorService } from "../services/endpoints/endpoint-monitor.service";
 import { PolicyService } from "../services/policy/policy.service";
 import { PenetrationTestOrchestratorFactory } from "../services/penetration-testing/penetration-test-orchestrator.service";
+import { CloakingService } from "../services/private-mode/cloaking.service";
 import { RagService } from "../services/rag/rag.service";
 import { ToolExecutionService } from "../services/tool-execution/tool-execution.service";
 import { WorkspaceService } from "../services/workspace/workspace.service";
@@ -42,6 +43,7 @@ export interface AppContext {
     llm: LLMService;
     admin: AdminService;
     policy: PolicyService;
+    privateMode: CloakingService;
     penetrationTesting: PenetrationTestOrchestratorFactory;
     tools: ToolExecutionService;
     health: HealthService;

@@ -23,6 +23,9 @@ import { WorkspaceInvitationRepository } from "../database/repositories/workspac
 import { AuthorizedDomainVerificationRepository } from "../database/repositories/authorized-domain-verification.repository";
 import { AuthorizedSecurityTestRunRepository } from "../database/repositories/authorized-security-test-run.repository";
 import { AuthorizedSecurityTestEventRepository } from "../database/repositories/authorized-security-test-event.repository";
+import { PrivateModeConfigRepository } from "../database/repositories/private-mode-config.repository";
+import { PrivateModeSessionRepository } from "../database/repositories/private-mode-session.repository";
+import { PrivateModeExitLogRepository } from "../database/repositories/private-mode-exit-log.repository";
 import { PgVectorStore } from "../rag/vector-stores/pgvector.store";
 import { QdrantVectorStore } from "../rag/vector-stores/qdrant.store";
 import { ProviderFactory } from "../llm/provider-factory";
@@ -57,6 +60,7 @@ import { FortiGateClientService } from "../services/integrations/fortigate-clien
 import { WebsiteScannerService } from "../services/website-scanner/website-scanner.service";
 import { SecurityReviewService } from "../services/security-review/security-review.service";
 import { AuthorizedSecurityTestingService } from "../services/authorized-testing/authorized-security-testing.service";
+import { CloakingService } from "../services/private-mode/cloaking.service";
 import { VerificationBypassService } from "../services/authorized-testing/verification-bypass.service";
 import {
   HeadlessBrowserCrawler,
@@ -100,7 +104,10 @@ export async function createAppContext(): Promise<AppContext> {
     workspaceInvitations: new WorkspaceInvitationRepository(postgres),
     authorizedDomainVerifications: new AuthorizedDomainVerificationRepository(postgres),
     authorizedSecurityTestRuns: new AuthorizedSecurityTestRunRepository(postgres),
-    authorizedSecurityTestEvents: new AuthorizedSecurityTestEventRepository(postgres)
+    authorizedSecurityTestEvents: new AuthorizedSecurityTestEventRepository(postgres),
+    privateModeConfigs: new PrivateModeConfigRepository(postgres),
+    privateModeSessions: new PrivateModeSessionRepository(postgres),
+    privateModeExitLogs: new PrivateModeExitLogRepository(postgres)
   };
 
   const toolRegistry = new ToolRegistry(logger);
@@ -223,12 +230,19 @@ export async function createAppContext(): Promise<AppContext> {
   const browserExecutablePath = resolveBrowserExecutablePath(
     env.WEBSITE_SCANNER_BROWSER_PATH
   );
+  const privateMode = new CloakingService(
+    repositories.privateModeConfigs,
+    repositories.privateModeSessions,
+    repositories.privateModeExitLogs,
+    logger
+  );
   const devModeConfig = getDevModeConfig();
   const verificationBypass = new VerificationBypassService(devModeConfig);
   const authorizedTestingDevelopmentLocalTargetsEnabled =
     env.NODE_ENV === "development" && env.AUTHORIZED_TESTING_DEV_MODE;
   const websiteScanner = new WebsiteScannerService(authorization, policy, {
     allowDevelopmentLocalTargets: authorizedTestingDevelopmentLocalTargetsEnabled,
+    privateMode,
     browserCrawler: browserExecutablePath
       ? new HeadlessBrowserCrawler({
           executablePath: browserExecutablePath,
@@ -254,7 +268,8 @@ export async function createAppContext(): Promise<AppContext> {
       defaultModel: env.DEFAULT_LLM_MODEL,
       allowDevelopmentLocalTargets:
         authorizedTestingDevelopmentLocalTargetsEnabled,
-      verificationBypass
+      verificationBypass,
+      privateMode
     }
   );
   const penetrationTesting = new PenetrationTestOrchestratorFactory({
@@ -276,10 +291,13 @@ export async function createAppContext(): Promise<AppContext> {
     repositories.tasks,
     health,
     authorization,
+    policy,
     endpoints,
     websiteScanner,
     securityReview,
-    authorizedTesting
+    authorizedTesting,
+    privateMode,
+    penetrationTesting
   );
 
   return {
@@ -300,6 +318,7 @@ export async function createAppContext(): Promise<AppContext> {
       llm,
       admin,
       policy,
+      privateMode,
       penetrationTesting,
       tools,
       health,

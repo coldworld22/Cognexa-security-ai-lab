@@ -5,10 +5,14 @@ import { z } from "zod";
 
 import type { LLMService } from "../llm/llm.service";
 import type {
+  PenetrationTestAssuranceSummary,
   PenetrationTestContext,
+  PenetrationTestEngagementMetadata,
+  PenetrationTestManualFormValidationSummary,
   PenetrationTestReport,
   Vulnerability
 } from "./penetration-test-orchestrator.service";
+import { RemediationEngine } from "./remediation-engine.service";
 
 const EXECUTIVE_SUMMARY_SCHEMA = z.object({
   executiveSummary: z.string().min(1).max(420)
@@ -31,12 +35,30 @@ export interface ReportGeneratorOptions {
   defaultProvider?: string;
   defaultModel?: string;
   now?: () => Date;
+  passivePageLimit?: number;
+  requestBudget?: number;
+  authProfileNames?: string[];
+  declaredAuthEndpoints?: number;
+  guardrails?: string[];
+  manualFormValidation?: Omit<
+    PenetrationTestManualFormValidationSummary,
+    "enabled"
+  >;
+  auditTrailEntries?: number;
 }
 
 export class ReportGenerator {
   private readonly defaultProvider?: string;
   private readonly defaultModel?: string;
   private readonly now: () => Date;
+  private readonly passivePageLimit: number;
+  private readonly requestBudget: number;
+  private readonly authProfileNames: string[];
+  private readonly declaredAuthEndpoints: number;
+  private readonly guardrails: string[];
+  private readonly manualFormValidation?: PenetrationTestManualFormValidationSummary;
+  private readonly auditTrailEntries: number;
+  private readonly remediationEngine = new RemediationEngine();
 
   private currentProviderSelection: AiProviderSelection | null = null;
 
@@ -48,6 +70,49 @@ export class ReportGenerator {
     this.defaultProvider = options.defaultProvider?.trim() || undefined;
     this.defaultModel = options.defaultModel?.trim() || undefined;
     this.now = options.now ?? (() => new Date());
+    this.passivePageLimit = Math.max(0, Math.trunc(options.passivePageLimit ?? 0));
+    this.requestBudget = Math.max(0, Math.trunc(options.requestBudget ?? 0));
+    this.authProfileNames = [...(options.authProfileNames ?? [])];
+    this.declaredAuthEndpoints = Math.max(
+      0,
+      Math.trunc(options.declaredAuthEndpoints ?? 0)
+    );
+    this.guardrails =
+      options.guardrails && options.guardrails.length > 0
+        ? [...options.guardrails]
+        : [
+            "Execution remained inside an authorized read-only boundary.",
+            "Validation stayed on the same origin as the approved target.",
+            "No destructive or credential-submission actions were executed automatically."
+          ];
+    this.manualFormValidation =
+      options.manualFormValidation &&
+      options.manualFormValidation.credentialLabels.length > 0
+        ? {
+            enabled: true,
+            rateLimitPerMinute: Math.max(
+              1,
+              Math.min(
+                60,
+                Math.trunc(
+                  options.manualFormValidation.rateLimitPerMinute ?? 5
+                )
+              )
+            ),
+            credentialLabels: [
+              ...options.manualFormValidation.credentialLabels
+            ],
+            ...(options.manualFormValidation.notes?.trim()
+              ? {
+                  notes: options.manualFormValidation.notes.trim()
+                }
+              : {})
+          }
+        : undefined;
+    this.auditTrailEntries = Math.max(
+      0,
+      Math.trunc(options.auditTrailEntries ?? 0)
+    );
   }
 
   async generateReport(
@@ -74,6 +139,12 @@ export class ReportGenerator {
         this.generateRecommendations(sortedVulnerabilities),
         this.calculateImpact(sortedVulnerabilities)
       ]);
+      const engagement = this.buildEngagementMetadata(context);
+      const assurance = this.buildAssuranceSummary(context);
+      const remediationPlan = this.remediationEngine.buildPlan(
+        sortedVulnerabilities,
+        context.attackChains
+      );
 
       const report: PenetrationTestReport = {
         id: randomUUID(),
@@ -83,6 +154,9 @@ export class ReportGenerator {
         duration: Math.max(0, endTime.getTime() - context.startTime.getTime()),
         executiveSummary,
         narrative,
+        engagement,
+        assurance,
+        remediationPlan,
         vulnerabilities: this.cloneSerializable(sortedVulnerabilities),
         attackChains: this.cloneSerializable(context.attackChains),
         impact,
@@ -400,6 +474,39 @@ export class ReportGenerator {
     }
 
     return this.uniqueStrings(recommendations).slice(0, 8);
+  }
+
+  private buildEngagementMetadata(
+    context: PenetrationTestContext
+  ): PenetrationTestEngagementMetadata {
+    const targetUrl = new URL(context.target);
+
+    return {
+      targetOrigin: targetUrl.origin,
+      verificationId: context.verificationId,
+      passivePageLimit: this.passivePageLimit,
+      requestBudget: this.requestBudget,
+      authProfiles: [...this.authProfileNames],
+      declaredAuthEndpoints: this.declaredAuthEndpoints,
+      guardrails: [...this.guardrails],
+      manualFormValidation: this.manualFormValidation
+    };
+  }
+
+  private buildAssuranceSummary(
+    context: PenetrationTestContext
+  ): PenetrationTestAssuranceSummary {
+    return {
+      readOnlyOnly: true,
+      sameOriginOnly: true,
+      auditTrailEntries: this.auditTrailEntries,
+      evidenceItems: context.evidence.length,
+      decisions: context.decisions.length,
+      successfulValidations: context.executionResults.filter(
+        (result) => result.success
+      ).length,
+      attackChainCount: context.attackChains.length
+    };
   }
 
   private sortVulnerabilities(vulnerabilities: Vulnerability[]): Vulnerability[] {

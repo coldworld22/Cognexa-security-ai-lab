@@ -216,7 +216,8 @@ function createAuthorizedSecurityTestReport(
       maxPages: 4,
       securityScore: 61,
       grade: "C",
-      passiveWarnings: ["Weak cookies"]
+      passiveWarnings: ["Weak cookies"],
+      declaredAuthEndpoints: []
     },
     plan: [
       {
@@ -457,6 +458,20 @@ test("PenetrationTestOrchestrator coordinates reconnaissance, planning, executio
           }
         }
       ],
+      authEndpointDescriptors: [
+        {
+          type: "auth_api",
+          name: "corporate-login",
+          entryUrl: "https://example.com/login",
+          endpoint: "https://example.com/api/login",
+          fields: ["corporateId", "userId", "password"]
+        }
+      ],
+      manualFormValidation: {
+        rateLimitPerMinute: 5,
+        credentialLabels: ["qa-admin"],
+        notes: "Manual POST validation only."
+      },
       maxPages: 4,
       maxRequests: 18,
       defaultProvider: "qwen",
@@ -486,6 +501,12 @@ test("PenetrationTestOrchestrator coordinates reconnaissance, planning, executio
   assert.equal(report.vulnerabilities.some((vulnerability) => vulnerability.type === "authentication"), true);
   assert.equal(report.vulnerabilities.some((vulnerability) => vulnerability.type === "authorization"), true);
   assert.equal(report.executiveSummary.includes("read-only"), true);
+  assert.equal(report.engagement.targetOrigin, "https://example.com");
+  assert.equal(report.engagement.declaredAuthEndpoints, 1);
+  assert.equal(report.engagement.manualFormValidation?.rateLimitPerMinute, 5);
+  assert.equal(report.assurance.readOnlyOnly, true);
+  assert.equal(report.assurance.attackChainCount, 1);
+  assert.equal(report.remediationPlan.workItems.length >= 2, true);
   assert.equal(report.recommendations.length >= 2, true);
   assert.equal(persisted.status, "completed");
   assert.equal(persisted.metadata.penetrationTest.runId, "run-1");

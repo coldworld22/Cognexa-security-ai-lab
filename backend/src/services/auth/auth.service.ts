@@ -5,7 +5,10 @@ import { randomUUID } from "crypto";
 
 import { CanonicalUserRole } from "../../authorization/authorization.types";
 import { env } from "../../config/env";
-import { normalizeUserRole } from "../../authorization/role-permission-matrix";
+import {
+  getPermissionsForRole,
+  normalizeUserRole
+} from "../../authorization/role-permission-matrix";
 import { UserEntity } from "../../database/entities/user.entity";
 import { UserRepository } from "../../database/repositories/user.repository";
 import { AppError } from "../../utils/app-error";
@@ -70,13 +73,14 @@ export class AuthService {
       lastLoginAt: new Date().toISOString()
     };
     const workspaceSession = await this.workspaces.listSessionForUser(nextUser);
+    const authenticatedUser = this.toAuthenticatedUser(nextUser);
 
     return {
-      user: this.toAuthenticatedUser(nextUser),
+      user: authenticatedUser,
       currentWorkspace: workspaceSession.currentWorkspace,
       workspaces: workspaceSession.workspaces,
       pendingInvitations: workspaceSession.pendingInvitations,
-      tokens: await this.issueTokens(user.id, user.email)
+      tokens: await this.issueTokens(authenticatedUser)
     };
   }
 
@@ -105,7 +109,17 @@ export class AuthService {
     }
 
     await this.redis.del(`refresh:${tokenId}`);
-    return this.issueTokens(decoded.sub as string, decoded.email as string);
+    const userId = decoded.sub;
+    if (typeof userId !== "string") {
+      throw new AppError("Refresh token is invalid", 401);
+    }
+
+    const user = await this.users.findById(userId);
+    if (!user) {
+      throw new AppError("Refresh token is no longer valid", 401);
+    }
+
+    return this.issueTokens(this.toAuthenticatedUser(user));
   }
 
   async updatePreferences(userId: string, preferences: Record<string, unknown>) {
@@ -140,15 +154,26 @@ export class AuthService {
     };
   }
 
-  private async issueTokens(userId: string, email: string) {
+  private async issueTokens(
+    user: Pick<AuthenticatedUser, "id" | "email" | "role">
+  ) {
     const jti = randomUUID();
-    const accessToken = jwt.sign({ email }, env.JWT_SECRET, {
-      subject: userId,
-      algorithm: "HS256",
-      expiresIn: env.ACCESS_TOKEN_TTL as jwt.SignOptions["expiresIn"]
-    });
-    const refreshToken = jwt.sign({ email, jti }, env.JWT_REFRESH_SECRET, {
-      subject: userId,
+    const permissions = getPermissionsForRole(user.role);
+    const accessToken = jwt.sign(
+      {
+        email: user.email,
+        role: user.role,
+        permissions
+      },
+      env.JWT_SECRET,
+      {
+        subject: user.id,
+        algorithm: "HS256",
+        expiresIn: env.ACCESS_TOKEN_TTL as jwt.SignOptions["expiresIn"]
+      }
+    );
+    const refreshToken = jwt.sign({ email: user.email, jti }, env.JWT_REFRESH_SECRET, {
+      subject: user.id,
       algorithm: "HS256",
       expiresIn: env.REFRESH_TOKEN_TTL as jwt.SignOptions["expiresIn"]
     });
@@ -157,7 +182,7 @@ export class AuthService {
       ? Math.max(decodedRefreshToken.exp - Math.floor(Date.now() / 1000), 1)
       : 60 * 60 * 24 * 7;
 
-    await this.redis.set(`refresh:${jti}`, userId, {
+    await this.redis.set(`refresh:${jti}`, user.id, {
       EX: refreshTokenTtlSeconds
     });
 

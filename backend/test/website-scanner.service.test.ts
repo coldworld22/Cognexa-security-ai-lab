@@ -385,6 +385,154 @@ test("WebsiteScannerService prefers a rendered browser crawl when available", as
   );
 });
 
+test("WebsiteScannerService detects a client-rendered authentication flow from same-origin bundles", async () => {
+  const service = new WebsiteScannerService(
+    {
+      assertPermission: async () => undefined
+    } as never,
+    {
+      evaluatePolicy: async () => ({
+        decision: "allow"
+      })
+    } as never,
+    {
+      lookupHost: (async () => [
+        {
+          address: "93.184.216.34",
+          family: 4
+        }
+      ]) as never,
+      browserCrawler: {
+        crawl: async () => ({
+          browserEngine: "Chrome/137.0.0.0",
+          finalUrl: "https://spa-auth.example/",
+          rootHeaders: {
+            "content-type": "text/html; charset=utf-8"
+          },
+          cookies: [],
+          pages: [
+            {
+              url: "https://spa-auth.example/",
+              statusCode: 200,
+              contentType: "text/html; charset=utf-8",
+              html: `
+                <html>
+                  <head>
+                    <title>The URL you requested has been blocked</title>
+                  </head>
+                  <body>
+                    <p>Access denied.</p>
+                  </body>
+                </html>
+              `
+            }
+          ],
+          warnings: [],
+          attemptedPages: 1,
+          failedPages: 0,
+          skippedCrossOriginPages: 0,
+          skippedNonHtmlPages: 0,
+          duplicatePagesSkipped: 0
+        })
+      },
+      fetchImpl: (async (input) => {
+        const url =
+          input instanceof URL
+            ? input.toString()
+            : typeof input === "string"
+              ? input
+              : input.url;
+
+        if (url === "http://spa-auth.example/") {
+          return new Response("", {
+            status: 301,
+            headers: {
+              location: "https://spa-auth.example/"
+            }
+          });
+        }
+
+        if (url === "https://spa-auth.example/") {
+          return new Response(
+            `
+              <html>
+                <head>
+                  <title>Corporate Banking</title>
+                  <script src="/assets/runtime.js"></script>
+                  <script src="/assets/main.js"></script>
+                </head>
+                <body>
+                  <app-root></app-root>
+                </body>
+              </html>
+            `,
+            {
+              status: 200,
+              headers: {
+                "content-type": "text/html; charset=utf-8"
+              }
+            }
+          );
+        }
+
+        if (url === "https://spa-auth.example/assets/runtime.js") {
+          return new Response("console.log('runtime');", {
+            status: 200,
+            headers: {
+              "content-type": "application/javascript; charset=utf-8"
+            }
+          });
+        }
+
+        if (url === "https://spa-auth.example/assets/main.js") {
+          return new Response(
+            [
+              "const loginRequestData = { corporateId: '', userId: '', password: '' };",
+              "httpClient.post('/authenticate', loginRequestData);",
+              "const ReqSessionID = 'abc123';"
+            ].join("\n"),
+            {
+              status: 200,
+              headers: {
+                "content-type": "application/javascript; charset=utf-8",
+                "content-length": "524288"
+              }
+            }
+          );
+        }
+
+        if (
+          url === "https://spa-auth.example/robots.txt" ||
+          url === "https://spa-auth.example/.well-known/security.txt" ||
+          url === "https://spa-auth.example/sitemap.xml"
+        ) {
+          return new Response("", {
+            status: 404,
+            headers: {
+              "content-type": "text/plain; charset=utf-8"
+            }
+          });
+        }
+
+        throw new Error(`Unexpected URL: ${url}`);
+      }) as typeof fetch
+    }
+  );
+
+  const result = await service.scanWebsite(createActor(), {
+    url: "spa-auth.example",
+    maxPages: 2
+  });
+
+  assert.equal(result.analysis.mode, "browser");
+  assert.equal(result.surface.loginForms, 0);
+  assert.ok(
+    result.findings.some(
+      (finding) => finding.id === "forms-client-rendered-auth-flow"
+    )
+  );
+});
+
 test("WebsiteScannerService falls back to a rendered browser crawl when the initial fetch fails", async () => {
   const service = new WebsiteScannerService(
     {

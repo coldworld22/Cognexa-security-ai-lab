@@ -14,9 +14,14 @@ export const DOMAIN_OWNERSHIP_VERIFICATION_STATUSES = [
 export const AUTHORIZED_SECURITY_TEST_MODULES = [
   "sql_injection",
   "xss",
+  "csrf",
   "authentication",
   "authorization",
   "api_security",
+  "ssrf",
+  "open_redirect",
+  "business_logic",
+  "oauth_flow",
   "waf",
   "session_management"
 ] as const;
@@ -69,7 +74,10 @@ export type AuthorizedApiVulnerabilityType =
   | "data_leakage"
   | "sql_injection"
   | "xss"
-  | "csrf";
+  | "csrf"
+  | "ssrf"
+  | "open_redirect"
+  | "oauth_flow";
 
 export type AuthorizedSecurityFindingDisposition =
   | "confirmed"
@@ -134,6 +142,44 @@ export interface AuthorizedSecurityTestAuthProfileSummary {
   cookieNames: string[];
 }
 
+export interface AuthorizedSecurityTestAuthEndpointDescriptorInput {
+  type: "auth_api";
+  name: string;
+  entryUrl: string;
+  endpoint: string;
+  method?: "POST";
+  contentType?: string;
+  fields: string[];
+  tokenFields?: string[];
+  stagingOnly?: boolean;
+  productionMode?: "passive_only";
+}
+
+export interface AuthorizedSecurityManualFormValidationInput {
+  rateLimitPerMinute?: number;
+  credentialLabels?: string[];
+  notes?: string;
+}
+
+export interface AuthorizedSecurityManualFormValidation {
+  rateLimitPerMinute: number;
+  credentialLabels: string[];
+  notes?: string;
+}
+
+export interface AuthorizedSecurityTestAuthEndpointDescriptor {
+  type: "auth_api";
+  name: string;
+  entryUrl: string;
+  endpoint: string;
+  method: "POST";
+  contentType: string;
+  fields: string[];
+  tokenFields: string[];
+  stagingOnly: boolean;
+  productionMode: "passive_only";
+}
+
 export interface RunAuthorizedSecurityTestRequest {
   verificationId?: string;
   url: string;
@@ -141,6 +187,8 @@ export interface RunAuthorizedSecurityTestRequest {
   maxRequests?: number;
   modules?: AuthorizedSecurityTestModule[];
   authProfiles?: AuthorizedSecurityTestAuthProfile[];
+  authEndpointDescriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   devModeBypass?: boolean;
 }
 
@@ -177,6 +225,8 @@ export interface AuthorizedSecurityBaseline {
   securityScore: number;
   grade: "A" | "B" | "C" | "D" | "F";
   passiveWarnings: string[];
+  declaredAuthEndpoints: AuthorizedSecurityTestAuthEndpointDescriptor[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidation;
 }
 
 export interface AuthorizedApiFindingDetails {

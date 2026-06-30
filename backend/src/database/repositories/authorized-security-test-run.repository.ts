@@ -48,7 +48,8 @@ const EMPTY_BASELINE: AuthorizedSecurityBaseline = {
   maxPages: 0,
   securityScore: 0,
   grade: "F",
-  passiveWarnings: []
+  passiveWarnings: [],
+  declaredAuthEndpoints: []
 };
 
 const EMPTY_SUMMARY: AuthorizedSecurityTestSummary = {
@@ -73,6 +74,253 @@ const EMPTY_AI_ANALYSIS: AuthorizedSecurityAiAnalysis = {
   predictions: [],
   nextSteps: []
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeManualFormValidation(
+  value: unknown
+): AuthorizedSecurityBaseline["manualFormValidation"] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const credentialLabels = asStringArray(value.credentialLabels).filter(Boolean);
+  const rateLimitPerMinute = Math.max(1, Math.min(60, asNumber(value.rateLimitPerMinute, 5)));
+  const notes = asString(value.notes).trim();
+
+  return {
+    rateLimitPerMinute,
+    credentialLabels,
+    ...(notes ? { notes } : {})
+  };
+}
+
+function normalizeBaseline(value: unknown): AuthorizedSecurityBaseline {
+  if (!isRecord(value)) {
+    return EMPTY_BASELINE;
+  }
+
+  return {
+    ...EMPTY_BASELINE,
+    ...value,
+    requestedUrl: asString(value.requestedUrl, EMPTY_BASELINE.requestedUrl),
+    finalUrl: asString(value.finalUrl, EMPTY_BASELINE.finalUrl),
+    hostname: asString(value.hostname, EMPTY_BASELINE.hostname),
+    pagesScanned: asNumber(value.pagesScanned, EMPTY_BASELINE.pagesScanned),
+    maxPages: asNumber(value.maxPages, EMPTY_BASELINE.maxPages),
+    securityScore: asNumber(value.securityScore, EMPTY_BASELINE.securityScore),
+    grade:
+      value.grade === "A" ||
+      value.grade === "B" ||
+      value.grade === "C" ||
+      value.grade === "D" ||
+      value.grade === "F"
+        ? value.grade
+        : EMPTY_BASELINE.grade,
+    passiveWarnings: asStringArray(value.passiveWarnings),
+    declaredAuthEndpoints: asArray<
+      AuthorizedSecurityBaseline["declaredAuthEndpoints"][number]
+    >(value.declaredAuthEndpoints),
+    manualFormValidation: normalizeManualFormValidation(value.manualFormValidation)
+  };
+}
+
+function normalizeFindingCounts(
+  value: unknown
+): AuthorizedSecurityTestSummary["findingCounts"] {
+  if (!isRecord(value)) {
+    return EMPTY_SUMMARY.findingCounts;
+  }
+
+  return {
+    info: asNumber(value.info, EMPTY_SUMMARY.findingCounts.info),
+    low: asNumber(value.low, EMPTY_SUMMARY.findingCounts.low),
+    medium: asNumber(value.medium, EMPTY_SUMMARY.findingCounts.medium),
+    high: asNumber(value.high, EMPTY_SUMMARY.findingCounts.high)
+  };
+}
+
+function normalizeCampaignStory(
+  value: unknown
+): AuthorizedSecurityTestSummary["campaignStory"] | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return {
+    ...value,
+    headline: asString(value.headline),
+    narrative: asString(value.narrative),
+    sections: asArray<
+      NonNullable<AuthorizedSecurityTestSummary["campaignStory"]>["sections"][number]
+    >(value.sections).map((section) => ({
+      ...section,
+      evidence: isRecord(section) ? asStringArray(section.evidence) : []
+    })),
+    chainHighlights: asStringArray(value.chainHighlights)
+  };
+}
+
+function normalizeAdaptation(
+  value: unknown
+): AuthorizedSecurityTestSummary["adaptation"] | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return {
+    ...value,
+    followUpExecuted: asArray<AuthorizedSecurityTestModule>(value.followUpExecuted),
+    decisions: asArray<
+      NonNullable<AuthorizedSecurityTestSummary["adaptation"]>["decisions"][number]
+    >(value.decisions).map((decision) => ({
+      ...decision,
+      triggerFindingIds: isRecord(decision)
+        ? asStringArray(decision.triggerFindingIds)
+        : [],
+      triggerCategories: isRecord(decision)
+        ? asArray<AuthorizedSecurityTestModule>(decision.triggerCategories)
+        : []
+    }))
+  };
+}
+
+function normalizeSummary(value: unknown): AuthorizedSecurityTestSummary {
+  if (!isRecord(value)) {
+    return EMPTY_SUMMARY;
+  }
+
+  const executionInsights = isRecord(value.executionInsights)
+    ? {
+        moduleConcurrency: asNumber(value.executionInsights.moduleConcurrency),
+        probeCacheHits: asNumber(value.executionInsights.probeCacheHits),
+        probeCacheMisses: asNumber(value.executionInsights.probeCacheMisses),
+        adaptiveBackoffCount: asNumber(value.executionInsights.adaptiveBackoffCount),
+        rateLimitedResponses: asNumber(value.executionInsights.rateLimitedResponses),
+        networkRequestsSent: asNumber(value.executionInsights.networkRequestsSent)
+      }
+    : undefined;
+
+  const adaptation = normalizeAdaptation(value.adaptation);
+  const campaignStory = normalizeCampaignStory(value.campaignStory);
+
+  return {
+    ...EMPTY_SUMMARY,
+    ...value,
+    headline: asString(value.headline, EMPTY_SUMMARY.headline),
+    planSource:
+      value.planSource === "ai" || value.planSource === "deterministic"
+        ? value.planSource
+        : EMPTY_SUMMARY.planSource,
+    requestBudget: asNumber(value.requestBudget, EMPTY_SUMMARY.requestBudget),
+    requestsSent: asNumber(value.requestsSent, EMPTY_SUMMARY.requestsSent),
+    modulesExecuted: asArray<AuthorizedSecurityTestModule>(value.modulesExecuted),
+    prioritizedModules: Array.isArray(value.prioritizedModules)
+      ? (value.prioritizedModules as AuthorizedSecurityTestSummary["prioritizedModules"])
+      : undefined,
+    executionInsights,
+    adaptation,
+    campaignStory,
+    findingCounts: normalizeFindingCounts(value.findingCounts),
+    recommendedActions: asStringArray(value.recommendedActions),
+    reversible: asBoolean(value.reversible, EMPTY_SUMMARY.reversible)
+  };
+}
+
+function normalizeAiAnalysis(value: unknown): AuthorizedSecurityAiAnalysis {
+  if (!isRecord(value)) {
+    return EMPTY_AI_ANALYSIS;
+  }
+
+  return {
+    ...EMPTY_AI_ANALYSIS,
+    ...value,
+    status:
+      value.status === "ready" || value.status === "unavailable"
+        ? value.status
+        : EMPTY_AI_ANALYSIS.status,
+    provider:
+      typeof value.provider === "string" ? value.provider : undefined,
+    model: typeof value.model === "string" ? value.model : undefined,
+    headline:
+      typeof value.headline === "string" ? value.headline : undefined,
+    executiveSummary:
+      typeof value.executiveSummary === "string"
+        ? value.executiveSummary
+        : undefined,
+    predictions: asArray<AuthorizedSecurityAiAnalysis["predictions"][number]>(
+      value.predictions
+    ).map((prediction) => ({
+      ...prediction,
+      indicators: isRecord(prediction) ? asStringArray(prediction.indicators) : []
+    })),
+    nextSteps: asStringArray(value.nextSteps),
+    unavailableReason:
+      typeof value.unavailableReason === "string"
+        ? value.unavailableReason
+        : undefined
+  };
+}
+
+function normalizeAuthProfileSummaries(
+  value: unknown
+): AuthorizedSecurityTestAuthProfileSummary[] {
+  return asArray<AuthorizedSecurityTestAuthProfileSummary>(value).map((profile) => ({
+    ...profile,
+    headerNames: isRecord(profile) ? asStringArray(profile.headerNames) : [],
+    cookieNames: isRecord(profile) ? asStringArray(profile.cookieNames) : []
+  }));
+}
+
+function normalizePlan(value: unknown): AuthorizedSecurityPlanStep[] {
+  return asArray<AuthorizedSecurityPlanStep>(value).map((step) => ({
+    ...step,
+    stopConditions: isRecord(step) ? asStringArray(step.stopConditions) : []
+  }));
+}
+
+function normalizeFindings(value: unknown): AuthorizedSecurityFinding[] {
+  return asArray<AuthorizedSecurityFinding>(value).map((finding) => ({
+    ...finding,
+    evidence: isRecord(finding) ? asStringArray(finding.evidence) : [],
+    supportingEventIds: isRecord(finding)
+      ? asStringArray(finding.supportingEventIds)
+      : []
+  }));
+}
+
+function normalizeAttackPaths(value: unknown): AuthorizedSecurityAttackPath[] {
+  return asArray<AuthorizedSecurityAttackPath>(value).map((attackPath) => ({
+    ...attackPath,
+    supportingFindingIds: isRecord(attackPath)
+      ? asStringArray(attackPath.supportingFindingIds)
+      : []
+  }));
+}
 
 export class AuthorizedSecurityTestRunRepository extends BaseRepository {
   async create(
@@ -299,27 +547,17 @@ export class AuthorizedSecurityTestRunRepository extends BaseRepository {
       hostname: row.hostname as string,
       status: row.status as AuthorizedSecurityTestRunStatus,
       requestedModules:
-        ((row.requested_modules as AuthorizedSecurityTestModule[] | null) ?? []) as
-          AuthorizedSecurityTestModule[],
-      guardrails: ((row.guardrails as string[] | null) ?? []) as string[],
+        asArray<AuthorizedSecurityTestModule>(row.requested_modules),
+      guardrails: asStringArray(row.guardrails),
       redactedAuthProfiles:
-        ((row.redacted_auth_profiles as AuthorizedSecurityTestAuthProfileSummary[] | null) ??
-          []) as AuthorizedSecurityTestAuthProfileSummary[],
-      baseline: ((row.baseline as AuthorizedSecurityBaseline | null) ??
-        EMPTY_BASELINE) as AuthorizedSecurityBaseline,
-      plan: ((row.plan as AuthorizedSecurityPlanStep[] | null) ?? []) as
-        AuthorizedSecurityPlanStep[],
-      summary: ((row.summary as AuthorizedSecurityTestSummary | null) ??
-        EMPTY_SUMMARY) as AuthorizedSecurityTestSummary,
-      findings: ((row.findings as AuthorizedSecurityFinding[] | null) ?? []) as
-        AuthorizedSecurityFinding[],
-      attackPaths:
-        ((row.attack_paths as AuthorizedSecurityAttackPath[] | null) ?? []) as
-          AuthorizedSecurityAttackPath[],
-      aiAnalysis:
-        ((row.ai_analysis as AuthorizedSecurityAiAnalysis | null) ?? EMPTY_AI_ANALYSIS) as
-          AuthorizedSecurityAiAnalysis,
-      warnings: ((row.warnings as string[] | null) ?? []) as string[],
+        normalizeAuthProfileSummaries(row.redacted_auth_profiles),
+      baseline: normalizeBaseline(row.baseline),
+      plan: normalizePlan(row.plan),
+      summary: normalizeSummary(row.summary),
+      findings: normalizeFindings(row.findings),
+      attackPaths: normalizeAttackPaths(row.attack_paths),
+      aiAnalysis: normalizeAiAnalysis(row.ai_analysis),
+      warnings: asStringArray(row.warnings),
       startedAt:
         row.started_at instanceof Date
           ? row.started_at.toISOString()

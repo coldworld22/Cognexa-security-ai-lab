@@ -16,6 +16,8 @@ import { TaskRepository } from "../../database/repositories/task.repository";
 import { AppError } from "../../utils/app-error";
 import {
   AUTHORIZED_SECURITY_TEST_MODULES,
+  AuthorizedSecurityTestAuthEndpointDescriptorInput,
+  AuthorizedSecurityManualFormValidationInput,
   AuthorizedSecurityTestAuthProfile,
   AuthorizedSecurityTestModule,
   AuthorizedSecurityTestReport
@@ -27,6 +29,7 @@ import {
   SecurityReviewResult,
   SecurityReviewService as SecurityReviewLab
 } from "../security-review/security-review.service";
+import { RemediationEngine } from "./remediation-engine.service";
 
 const ATTACK_PLAN_SCHEMA = z.object({
   name: z.string().min(1),
@@ -208,12 +211,75 @@ export interface PenetrationTestReport {
   duration: number;
   executiveSummary: string;
   narrative: string;
+  engagement: PenetrationTestEngagementMetadata;
+  assurance: PenetrationTestAssuranceSummary;
+  remediationPlan: PenetrationTestRemediationPlan;
   vulnerabilities: Vulnerability[];
   attackChains: AttackChain[];
   impact: string;
   recommendations: string[];
   evidence: Evidence[];
   rawData: any;
+}
+
+export type PenetrationTestRemediationPriority =
+  | "immediate"
+  | "high"
+  | "medium"
+  | "hardening";
+
+export type PenetrationTestRemediationOwner =
+  | "application"
+  | "identity"
+  | "platform"
+  | "data"
+  | "security"
+  | "product";
+
+export interface PenetrationTestRemediationWorkItem {
+  id: string;
+  title: string;
+  priority: PenetrationTestRemediationPriority;
+  owner: PenetrationTestRemediationOwner;
+  summary: string;
+  affectedLocations: string[];
+  sourceVulnerabilityIds: string[];
+  validationPlan: string;
+}
+
+export interface PenetrationTestRemediationPlan {
+  headline: string;
+  quickWins: string[];
+  strategicFixes: string[];
+  workItems: PenetrationTestRemediationWorkItem[];
+}
+
+export interface PenetrationTestManualFormValidationSummary {
+  enabled: true;
+  rateLimitPerMinute: number;
+  credentialLabels: string[];
+  notes?: string;
+}
+
+export interface PenetrationTestEngagementMetadata {
+  targetOrigin: string;
+  verificationId: string;
+  passivePageLimit: number;
+  requestBudget: number;
+  authProfiles: string[];
+  declaredAuthEndpoints: number;
+  guardrails: string[];
+  manualFormValidation?: PenetrationTestManualFormValidationSummary;
+}
+
+export interface PenetrationTestAssuranceSummary {
+  readOnlyOnly: true;
+  sameOriginOnly: true;
+  auditTrailEntries: number;
+  evidenceItems: number;
+  decisions: number;
+  successfulValidations: number;
+  attackChainCount: number;
 }
 
 export interface AttackResult {
@@ -275,6 +341,8 @@ export interface PenetrationTestOrchestratorDependencies {
   agentId?: string;
   conversationId?: string;
   authProfiles?: AuthorizedSecurityTestAuthProfile[];
+  authEndpointDescriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   maxPages?: number;
   maxRequests?: number;
   defaultProvider?: string;
@@ -288,6 +356,8 @@ export interface CreatePenetrationTestOrchestratorInput {
   runId?: string;
   actor: AccessContext;
   authProfiles?: AuthorizedSecurityTestAuthProfile[];
+  authEndpointDescriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   maxPages?: number;
   maxRequests?: number;
   taskId?: string;
@@ -314,6 +384,8 @@ export class PenetrationTestOrchestratorFactory {
       ...this.dependencies,
       actor: input.actor,
       authProfiles: input.authProfiles,
+      authEndpointDescriptors: input.authEndpointDescriptors,
+      manualFormValidation: input.manualFormValidation,
       maxPages: input.maxPages,
       maxRequests: input.maxRequests,
       taskId: input.taskId,
@@ -337,6 +409,8 @@ export class PenetrationTestOrchestrator {
   private readonly agents?: AgentRepository;
   private readonly conversationId?: string;
   private readonly authProfiles: AuthorizedSecurityTestAuthProfile[];
+  private readonly authEndpointDescriptors: AuthorizedSecurityTestAuthEndpointDescriptorInput[];
+  private readonly manualFormValidation?: AuthorizedSecurityManualFormValidationInput;
   private readonly maxPages: number;
   private readonly maxRequests: number;
   private readonly defaultProvider: string;
@@ -346,6 +420,7 @@ export class PenetrationTestOrchestrator {
 
   private readonly auditTrail: PenetrationTestAuditEntry[] = [];
   private readonly activeReports: AuthorizedSecurityTestReport[] = [];
+  private readonly remediationEngine = new RemediationEngine();
 
   private taskId?: string;
   private agentId?: string;
@@ -378,6 +453,18 @@ export class PenetrationTestOrchestrator {
     this.agentId = dependencies.agentId;
     this.conversationId = dependencies.conversationId;
     this.authProfiles = this.normalizeAuthProfiles(dependencies.authProfiles);
+    this.authEndpointDescriptors = this.normalizeAuthEndpointDescriptors(
+      dependencies.authEndpointDescriptors
+    );
+    this.manualFormValidation = dependencies.manualFormValidation
+      ? {
+          rateLimitPerMinute: dependencies.manualFormValidation.rateLimitPerMinute,
+          credentialLabels: [
+            ...(dependencies.manualFormValidation.credentialLabels ?? [])
+          ],
+          notes: dependencies.manualFormValidation.notes
+        }
+      : undefined;
     this.maxPages = this.normalizeMaxPages(dependencies.maxPages);
     this.maxRequests = this.normalizeMaxRequests(dependencies.maxRequests);
     this.remainingRequestBudget = this.maxRequests;
@@ -865,7 +952,9 @@ export class PenetrationTestOrchestrator {
         authProfiles:
           module === "authorization" || module === "authentication"
             ? this.authProfiles
-            : this.authProfiles.filter((profile) => profile.role === "anonymous")
+            : this.authProfiles.filter((profile) => profile.role === "anonymous"),
+        authEndpointDescriptors: this.authEndpointDescriptors,
+        manualFormValidation: this.manualFormValidation
       });
 
       this.lastExecutionReport = report;
@@ -1098,6 +1187,12 @@ export class PenetrationTestOrchestrator {
       reportId: this.runId,
       recommendations: recommendations.length
     });
+    const engagement = this.buildEngagementMetadata();
+    const assurance = this.buildAssuranceSummary();
+    const remediationPlan = this.remediationEngine.buildPlan(
+      this.context.vulnerabilities,
+      this.context.attackChains
+    );
 
     const report: PenetrationTestReport = {
       id: this.runId,
@@ -1107,6 +1202,9 @@ export class PenetrationTestOrchestrator {
       duration: Math.max(0, endTime.getTime() - this.context.startTime.getTime()),
       executiveSummary,
       narrative,
+      engagement,
+      assurance,
+      remediationPlan,
       vulnerabilities: this.cloneSerializable(this.context.vulnerabilities),
       attackChains: this.cloneSerializable(this.context.attackChains),
       impact,
@@ -1119,7 +1217,7 @@ export class PenetrationTestOrchestrator {
         context: this.cloneSerializable(this.context),
         activeReports: this.cloneSerializable(this.activeReports),
         auditTrail: this.cloneSerializable(this.auditTrail),
-        guardrails: this.buildGuardrails(),
+        guardrails: engagement.guardrails,
         requestBudgetRemaining: this.remainingRequestBudget
       }
     };
@@ -1303,6 +1401,42 @@ export class PenetrationTestOrchestrator {
     return normalized;
   }
 
+  private normalizeAuthEndpointDescriptors(
+    descriptors?: AuthorizedSecurityTestAuthEndpointDescriptorInput[]
+  ): AuthorizedSecurityTestAuthEndpointDescriptorInput[] {
+    if (!descriptors || descriptors.length === 0) {
+      return [];
+    }
+
+    const seen = new Set<string>();
+    const normalized: AuthorizedSecurityTestAuthEndpointDescriptorInput[] = [];
+    for (const descriptor of descriptors.slice(0, 6)) {
+      const name = descriptor.name.trim();
+      const endpoint = descriptor.endpoint.trim();
+      if (!name || !endpoint || seen.has(endpoint.toLowerCase())) {
+        continue;
+      }
+
+      seen.add(endpoint.toLowerCase());
+      normalized.push({
+        type: "auth_api",
+        name,
+        entryUrl: descriptor.entryUrl.trim(),
+        endpoint,
+        method: "POST",
+        contentType: descriptor.contentType?.trim() || undefined,
+        fields: descriptor.fields.map((field) => field.trim()).filter(Boolean),
+        tokenFields:
+          descriptor.tokenFields?.map((field) => field.trim()).filter(Boolean) ??
+          undefined,
+        stagingOnly: descriptor.stagingOnly,
+        productionMode: descriptor.productionMode
+      });
+    }
+
+    return normalized;
+  }
+
   private normalizeMaxPages(value?: number): number {
     const numeric = Math.trunc(value ?? 4);
     return Math.max(1, Math.min(8, numeric));
@@ -1318,9 +1452,13 @@ export class PenetrationTestOrchestrator {
       `Target origin must remain ${new URL(this.context.target).origin}.`,
       `Passive reconnaissance is capped at ${this.maxPages} page(s).`,
       `Active validation is capped at ${this.maxRequests} total request(s).`,
+      "Declared auth endpoint descriptors are treated as discovery metadata only; the orchestrator does not submit credentials or replay tokens through them.",
+      this.manualFormValidation
+        ? `Manual POST validation notes are limited to labeled test credentials and the automated validator remains read-only while throttled to ${Math.max(1, Math.min(60, Math.trunc(this.manualFormValidation.rateLimitPerMinute ?? 5)))} request(s) per minute.`
+        : undefined,
       "Only GET, HEAD, and OPTIONS based testing is allowed.",
       "No destructive actions, data modification, uploads, brute force, or persistence are permitted."
-    ];
+    ].filter((guardrail): guardrail is string => Boolean(guardrail));
   }
 
   private recordDecision(
@@ -1439,6 +1577,10 @@ export class PenetrationTestOrchestrator {
       modules.add("session_management");
     }
 
+    if (/(csrf|xsrf|samesite)/.test(text)) {
+      modules.add("csrf");
+    }
+
     if (
       /(role|privilege|permission|authorization|access control|admin)/.test(text) &&
       this.hasDifferentialProfiles()
@@ -1448,6 +1590,19 @@ export class PenetrationTestOrchestrator {
 
     if (/(api|swagger|graphql|cors|json|endpoint|idor|exposure)/.test(text)) {
       modules.add("api_security");
+    }
+
+    if (/(oauth|oidc|openid|sso|authorize|redirect_uri)/.test(text)) {
+      modules.add("oauth_flow");
+      modules.add("open_redirect");
+    }
+
+    if (/(ssrf|server-side request forgery|proxy|webhook|url fetch|avatar|feed)/.test(text)) {
+      modules.add("ssrf");
+    }
+
+    if (/(workflow|checkout|billing|payment|approval|coupon|discount|redeem|subscription|invite)/.test(text)) {
+      modules.add("business_logic");
     }
 
     if (/(xss|script|csp|frame|client-side|dom)/.test(text)) {
@@ -1495,6 +1650,16 @@ export class PenetrationTestOrchestrator {
           expectedOutcome: "Protected routes should reject or redirect unauthenticated requests.",
           status: "pending"
         };
+      case "csrf":
+        return {
+          id: randomUUID(),
+          name: "Review anti-CSRF boundaries",
+          type: module,
+          target,
+          payload: "Read-only inspection of cookie-backed forms, token markers, and documented mutation flows.",
+          expectedOutcome: "State-changing flows should expose strong anti-CSRF controls and safer SameSite defaults.",
+          status: "pending"
+        };
       case "authorization":
         return {
           id: randomUUID(),
@@ -1513,6 +1678,46 @@ export class PenetrationTestOrchestrator {
           target,
           payload: "Read-only discovery of exposed API routes, schemas, and permissive access patterns.",
           expectedOutcome: "API endpoints should enforce least privilege and safe data exposure.",
+          status: "pending"
+        };
+      case "ssrf":
+        return {
+          id: randomUUID(),
+          name: "Inspect URL-handling retrieval paths",
+          type: module,
+          target,
+          payload: "Read-only same-origin URL probes against fetch-style features and webhook-like endpoints.",
+          expectedOutcome: "User-controlled URL inputs should not trigger arbitrary server-side retrieval behavior.",
+          status: "pending"
+        };
+      case "open_redirect":
+        return {
+          id: randomUUID(),
+          name: "Check redirect boundaries",
+          type: module,
+          target,
+          payload: "Read-only off-origin redirect targets against redirect-style parameters and SSO routes.",
+          expectedOutcome: "Redirect handlers should reject or normalize unsafe off-origin destinations.",
+          status: "pending"
+        };
+      case "business_logic":
+        return {
+          id: randomUUID(),
+          name: "Validate workflow business rules",
+          type: module,
+          target,
+          payload: "Read-only comparison of workflow-step, billing, and approval views across safe input variants.",
+          expectedOutcome: "Workflow progression should stay server-driven and role-aware.",
+          status: "pending"
+        };
+      case "oauth_flow":
+        return {
+          id: randomUUID(),
+          name: "Review OAuth and OIDC flows",
+          type: module,
+          target,
+          payload: "Read-only inspection of authorization metadata, authorize entry points, and redirect_uri handling.",
+          expectedOutcome: "OAuth flows should use strong redirect validation and modern authorization patterns.",
           status: "pending"
         };
       case "session_management":
@@ -1650,14 +1855,24 @@ export class PenetrationTestOrchestrator {
       case "authentication":
       case "authorization":
         return 100;
+      case "business_logic":
+        return 96;
+      case "oauth_flow":
+        return 88;
       case "api_security":
         return 80;
+      case "csrf":
+        return 78;
       case "session_management":
         return 75;
+      case "ssrf":
+        return 74;
       case "sql_injection":
         return 70;
       case "xss":
         return 65;
+      case "open_redirect":
+        return 60;
       case "waf":
         return 55;
       default:
@@ -1778,12 +1993,32 @@ export class PenetrationTestOrchestrator {
       return "authentication";
     }
 
+    if (/(csrf|xsrf|samesite)/.test(text)) {
+      return "csrf";
+    }
+
     if (/(role|privilege|authorization|access control)/.test(text)) {
       return "authorization";
     }
 
+    if (/(business logic|workflow|checkout|billing|payment|approval|coupon|discount|redeem|subscription|invite)/.test(text)) {
+      return "business_logic";
+    }
+
     if (/(api|swagger|graphql|json)/.test(text)) {
       return "api_security";
+    }
+
+    if (/(oauth|oidc|openid|sso|authorize)/.test(text)) {
+      return "oauth_flow";
+    }
+
+    if (/(redirect|redirect_uri|returnurl|callback)/.test(text)) {
+      return "open_redirect";
+    }
+
+    if (/(ssrf|server-side request forgery|proxy|webhook|fetch url)/.test(text)) {
+      return "ssrf";
     }
 
     if (/(script|xss|dom|csp)/.test(text)) {
@@ -1922,6 +2157,12 @@ export class PenetrationTestOrchestrator {
         .map((step) => `Step ${step.step}: ${step.action} ${step.result}`)
         .join(" ")
         ?? "The orchestrator moved from passive reconnaissance to guarded active validation within a strict read-only boundary.";
+    const engagement = this.buildEngagementMetadata();
+    const assurance = this.buildAssuranceSummary();
+    const remediationPlan = this.remediationEngine.buildPlan(
+      this.context.vulnerabilities,
+      this.context.attackChains
+    );
 
     return {
       id: this.runId,
@@ -1931,6 +2172,9 @@ export class PenetrationTestOrchestrator {
       duration: Math.max(0, endTime.getTime() - this.context.startTime.getTime()),
       executiveSummary: `The orchestrated penetration test identified ${this.context.vulnerabilities.length} vulnerability signal(s) and confirmed ${successfulAttacks.length} guarded active validation path(s) against ${this.context.target}.`,
       narrative: attackStory,
+      engagement,
+      assurance,
+      remediationPlan,
       vulnerabilities: this.cloneSerializable(this.context.vulnerabilities),
       attackChains: this.cloneSerializable(this.context.attackChains),
       impact: this.describeImpact(highestSeverity),
@@ -1943,6 +2187,57 @@ export class PenetrationTestOrchestrator {
         context: this.cloneSerializable(this.context),
         auditTrail: this.cloneSerializable(this.auditTrail)
       }
+    };
+  }
+
+  private buildEngagementMetadata(): PenetrationTestEngagementMetadata {
+    const targetUrl = new URL(this.context.target);
+    const manualFormValidation =
+      this.manualFormValidation &&
+      (this.manualFormValidation.credentialLabels?.length ?? 0) > 0
+        ? {
+            enabled: true as const,
+            rateLimitPerMinute: Math.max(
+              1,
+              Math.min(
+                60,
+                Math.trunc(this.manualFormValidation.rateLimitPerMinute ?? 5)
+              )
+            ),
+            credentialLabels: [
+              ...(this.manualFormValidation.credentialLabels ?? [])
+            ],
+            ...(this.manualFormValidation.notes?.trim()
+              ? {
+                  notes: this.manualFormValidation.notes.trim()
+                }
+              : {})
+          }
+        : undefined;
+
+    return {
+      targetOrigin: targetUrl.origin,
+      verificationId: this.context.verificationId,
+      passivePageLimit: this.maxPages,
+      requestBudget: this.maxRequests,
+      authProfiles: this.authProfiles.map((profile) => profile.name),
+      declaredAuthEndpoints: this.authEndpointDescriptors.length,
+      guardrails: this.buildGuardrails(),
+      manualFormValidation
+    };
+  }
+
+  private buildAssuranceSummary(): PenetrationTestAssuranceSummary {
+    return {
+      readOnlyOnly: true,
+      sameOriginOnly: true,
+      auditTrailEntries: this.auditTrail.length,
+      evidenceItems: this.context.evidence.length,
+      decisions: this.context.decisions.length,
+      successfulValidations: this.context.executionResults.filter(
+        (result) => result.success
+      ).length,
+      attackChainCount: this.context.attackChains.length
     };
   }
 

@@ -231,6 +231,20 @@ test("ReportGenerator produces an AI-backed report when a model is available", a
   } as unknown as LLMService;
 
   const generator = new ReportGenerator(llm, createLogger() as never, {
+    passivePageLimit: 4,
+    requestBudget: 18,
+    authProfileNames: ["low", "high"],
+    declaredAuthEndpoints: 1,
+    auditTrailEntries: 6,
+    guardrails: [
+      "Execution remained inside an authorized read-only boundary.",
+      "Validation stayed on the same origin as the approved target."
+    ],
+    manualFormValidation: {
+      rateLimitPerMinute: 5,
+      credentialLabels: ["qa-admin"],
+      notes: "Manual POST validation only."
+    },
     now: () => new Date("2026-06-24T08:10:00.000Z")
   });
 
@@ -244,6 +258,19 @@ test("ReportGenerator produces an AI-backed report when a model is available", a
   assert.equal(report.recommendations.includes("Restrict API explorer tooling to authenticated administrators."), true);
   assert.equal(report.impact.includes("critical privilege"), true);
   assert.equal(report.attackChains.length, 1);
+  assert.equal(report.engagement.targetOrigin, "https://example.com");
+  assert.equal(report.engagement.requestBudget, 18);
+  assert.equal(report.engagement.declaredAuthEndpoints, 1);
+  assert.equal(report.engagement.manualFormValidation?.rateLimitPerMinute, 5);
+  assert.equal(report.assurance.readOnlyOnly, true);
+  assert.equal(report.assurance.auditTrailEntries, 6);
+  assert.equal(report.remediationPlan.workItems.length >= 2, true);
+  assert.equal(
+    report.remediationPlan.workItems.some(
+      (item) => item.title === "Restore authentication gates on privileged surfaces"
+    ),
+    true
+  );
   assert.equal(report.vulnerabilities.length, 4);
   assert.equal(report.evidence.length, 2);
   assert.equal(typeof report.id, "string");
@@ -273,6 +300,9 @@ test("ReportGenerator falls back to deterministic content when AI is unavailable
     true
   );
   assert.equal(report.impact.includes("critical privilege"), true);
+  assert.equal(report.engagement.guardrails.length >= 3, true);
+  assert.equal(report.assurance.successfulValidations, 1);
+  assert.equal(report.remediationPlan.workItems.length >= 2, true);
   assert.equal(report.rawData.stats.chainCount, 1);
   assert.equal(report.rawData.stats.confirmedFindings, 1);
 });

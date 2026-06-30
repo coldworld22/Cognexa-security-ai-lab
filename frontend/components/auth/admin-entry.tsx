@@ -3,6 +3,7 @@
 import Link from "next/link";
 import {
   ArrowUpRight,
+  EyeOff,
   FlaskConical,
   LockKeyhole,
   Radar,
@@ -41,7 +42,7 @@ export function AdminEntry() {
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             <Link
               href="/admin/network-monitor"
               className="rounded-[24px] border border-black/8 bg-[var(--surface-soft)] p-5 transition hover:border-black/14 hover:bg-white"
@@ -54,6 +55,25 @@ export function AdminEntry() {
               </h3>
               <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                 {t("adminNetwork.launchDescription")}
+              </p>
+              <div className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                {t("admin.openTool")}
+                <ArrowUpRight className="size-4" />
+              </div>
+            </Link>
+
+            <Link
+              href="/admin/private-mode"
+              className="rounded-[24px] border border-black/8 bg-[var(--surface-soft)] p-5 transition hover:border-black/14 hover:bg-white"
+            >
+              <div className="inline-flex rounded-2xl bg-[rgba(15,23,42,0.08)] p-3 text-[#0f172a]">
+                <EyeOff className="size-5" />
+              </div>
+              <h3 className="mt-4 text-xl font-semibold text-[var(--text-primary)]">
+                {t("privateMode.navLabel")}
+              </h3>
+              <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                {t("privateMode.launchDescription")}
               </p>
               <div className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                 {t("admin.openTool")}

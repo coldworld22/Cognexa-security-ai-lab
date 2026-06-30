@@ -771,7 +771,17 @@ export class DecisionEngine {
     switch (failedType) {
       case "authentication":
         return "authorization";
+      case "csrf":
+        return "business_logic";
       case "authorization":
+        return "business_logic";
+      case "business_logic":
+        return "authorization";
+      case "oauth_flow":
+        return "open_redirect";
+      case "open_redirect":
+        return "oauth_flow";
+      case "ssrf":
         return "api_security";
       case "api_security":
         return "authorization";
@@ -799,11 +809,26 @@ export class DecisionEngine {
     if (/(auth|login|credential|password)/.test(normalized)) {
       return "authentication";
     }
+    if (/(csrf)/.test(normalized)) {
+      return "csrf";
+    }
     if (/(authorization|access control|role|privilege|idor)/.test(normalized)) {
       return "authorization";
     }
+    if (/(business logic|workflow|checkout|billing|payment|approval|coupon|discount|redeem)/.test(normalized)) {
+      return "business_logic";
+    }
     if (/(api|graphql|swagger|cors|json)/.test(normalized)) {
       return "api_security";
+    }
+    if (/(oauth|oidc|openid|sso)/.test(normalized)) {
+      return "oauth_flow";
+    }
+    if (/(redirect|redirect_uri|returnurl|callback)/.test(normalized)) {
+      return "open_redirect";
+    }
+    if (/(ssrf|server-side request forgery|proxy|webhook|fetch url)/.test(normalized)) {
+      return "ssrf";
     }
     if (/(cookie|session|csrf|token)/.test(normalized)) {
       return "session_management";
@@ -827,10 +852,20 @@ export class DecisionEngine {
     switch (module) {
       case "authentication":
         return "Compare anonymous and authenticated read-only responses without modifying state.";
+      case "csrf":
+        return "Inspect cookie-backed forms and API descriptions for origin and anti-CSRF protections.";
       case "authorization":
         return "Compare lower- and higher-trust read-only responses for the same resource.";
+      case "business_logic":
+        return "Compare workflow-step and approval-oriented views for client-controlled state progression issues.";
       case "api_security":
         return "Inspect public read-only API metadata and response shaping for sensitive routes.";
+      case "ssrf":
+        return "Probe URL-handling features with read-only same-origin destinations and compare fetch behavior.";
+      case "open_redirect":
+        return "Check redirect-style parameters with controlled off-origin targets and observe rejection behavior.";
+      case "oauth_flow":
+        return "Inspect OAuth and OIDC metadata, authorize entry points, and redirect_uri handling with read-only requests.";
       case "session_management":
         return "Review cookie, redirect, and session-boundary behavior with read-only navigation.";
       case "sql_injection":
@@ -850,10 +885,20 @@ export class DecisionEngine {
     switch (module) {
       case "authentication":
         return "Confirm whether privileged content is protected consistently for anonymous users.";
+      case "csrf":
+        return "Determine whether cookie-backed state-changing flows expose weak anti-CSRF boundaries.";
       case "authorization":
         return "Determine whether privilege boundaries change the read-only response as expected.";
+      case "business_logic":
+        return "Determine whether workflow progression or approval views can be influenced by client-controlled input.";
       case "api_security":
         return "Identify whether sensitive API routes or metadata are exposed publicly.";
+      case "ssrf":
+        return "Determine whether URL-driven features appear to trigger server-side retrieval behavior.";
+      case "open_redirect":
+        return "Determine whether redirect handling permits unsafe off-origin navigation.";
+      case "oauth_flow":
+        return "Determine whether OAuth and OIDC flows expose weak redirect or state-handling controls.";
       case "session_management":
         return "Confirm whether session controls and cookie boundaries are enforced consistently.";
       case "sql_injection":
@@ -875,8 +920,14 @@ export class DecisionEngine {
         return "SQL injection";
       case "xss":
         return "XSS";
+      case "csrf":
+        return "CSRF";
+      case "ssrf":
+        return "SSRF";
       case "api_security":
         return "API security";
+      case "oauth_flow":
+        return "OAuth flow";
       case "session_management":
         return "session management";
       default:

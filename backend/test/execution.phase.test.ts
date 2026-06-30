@@ -205,7 +205,8 @@ function createAuthorizedSecurityTestReport(
       maxPages: 4,
       securityScore: 61,
       grade: "C",
-      passiveWarnings: ["Weak cookies"]
+      passiveWarnings: ["Weak cookies"],
+      declaredAuthEndpoints: []
     },
     plan: [
       {

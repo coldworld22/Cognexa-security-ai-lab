@@ -10,6 +10,7 @@ import { ChatController } from "../controllers/chat.controller";
 import { EndpointController } from "../controllers/endpoint.controller";
 import { LLMController } from "../controllers/llm.controller";
 import { MemoryController } from "../controllers/memory.controller";
+import { PenetrationTestController } from "../controllers/penetration-test.controller";
 import { PolicyController } from "../controllers/policy.controller";
 import { RagController } from "../controllers/rag.controller";
 import { ToolController } from "../controllers/tool.controller";
@@ -25,6 +26,7 @@ import { createEndpointAgentRoutes } from "./endpoint-agents.routes";
 import { createEndpointRoutes } from "./endpoints.routes";
 import { createLlmRoutes } from "./llm.routes";
 import { createMemoryRoutes } from "./memory.routes";
+import { createPenetrationTestRoutes } from "./penetration-test.routes";
 import { createRagRoutes } from "./rag.routes";
 import { createToolsRoutes } from "./tools.routes";
 import { createWorkspaceRoutes } from "./workspace.routes";
@@ -46,6 +48,10 @@ export function createApiRouter(context: AppContext) {
   const adminController = new AdminController(
     context.services.admin,
     context.services.tools
+  );
+  const penetrationTestController = new PenetrationTestController(
+    context.services.admin,
+    context.logger
   );
   const policyController = new PolicyController(context.services.policy);
 
@@ -102,6 +108,13 @@ export function createApiRouter(context: AppContext) {
       action: "route_access"
     }),
     createToolsRoutes(toolController)
+  );
+  router.use(
+    "/admin/authorized-testing/advanced-runs",
+    createPenetrationTestRoutes(
+      penetrationTestController,
+      context.services.authorization
+    )
   );
   router.use(
     "/admin",
