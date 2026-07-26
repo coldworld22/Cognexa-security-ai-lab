@@ -10,13 +10,51 @@ import { verifyAccessToken } from "@/lib/auth-token";
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "";
 const API_URL = process.env.NEXT_PUBLIC_API_URL?.trim() ?? "";
+const ENFORCE_HTTPS =
+  process.env.ENFORCE_HTTPS === "true" || process.env.LOCAL_HTTPS === "true";
 
 interface AuthSessionPayload {
   permissions: string[];
+  privateMode?: {
+    active?: boolean;
+    canActivate?: boolean;
+    activationPath?: string;
+    blockedPath?: string;
+  };
 }
 
 function isAdminPath(pathname: string): boolean {
   return pathname === "/admin" || pathname.startsWith("/admin/");
+}
+
+function isPrivateModeActivationPath(pathname: string): boolean {
+  return pathname === "/admin/private-mode" || pathname.startsWith("/admin/private-mode/");
+}
+
+function isPrivateModeBlockedPath(pathname: string): boolean {
+  return pathname === "/private-mode-required";
+}
+
+function isPublicPath(pathname: string): boolean {
+  return (
+    pathname === "/login" ||
+    pathname === "/api/health" ||
+    pathname === "/api/session"
+  );
+}
+
+function requestProtocol(request: NextRequest): "http" | "https" {
+  const forwardedProtocol = request.headers
+    .get("x-forwarded-proto")
+    ?.split(",")[0]
+    ?.trim()
+    ?.toLowerCase();
+
+  if (forwardedProtocol === "http" || forwardedProtocol === "https") {
+    return forwardedProtocol;
+  }
+
+  return request.nextUrl.protocol === "https:" ? "https" : "http";
 }
 
 function clearAuthCookies(response: NextResponse) {
@@ -33,13 +71,9 @@ async function fetchAuthSession(
 ): Promise<AuthSessionPayload | null> {
   if (JWT_SECRET.trim()) {
     const token = await verifyAccessToken(accessToken, JWT_SECRET);
-    if (token) {
-      return {
-        permissions: token.permissions
-      };
+    if (!token) {
+      return null;
     }
-
-    return null;
   }
 
   return fetchBackendAuthSession(request, accessToken);
@@ -69,6 +103,7 @@ async function fetchBackendAuthSession(
 
   const payload = (await response.json()) as {
     permissions?: unknown;
+    privateMode?: unknown;
   };
   const permissions = Array.isArray(payload.permissions)
     ? payload.permissions.filter((entry): entry is string => typeof entry === "string")
@@ -79,43 +114,21 @@ async function fetchBackendAuthSession(
   }
 
   return {
-    permissions
+    permissions,
+    privateMode:
+      payload.privateMode && typeof payload.privateMode === "object"
+        ? (payload.privateMode as AuthSessionPayload["privateMode"])
+        : undefined
   };
 }
 
 function resolveApiUrl(request: NextRequest): string {
   if (API_URL) {
-    try {
-      const parsedUrl = new URL(API_URL);
-
-      if (
-        request.nextUrl.protocol === "http:" &&
-        parsedUrl.protocol === "https:" &&
-        isLocalhostHostname(request.nextUrl.hostname) &&
-        isLocalhostHostname(parsedUrl.hostname)
-      ) {
-        parsedUrl.protocol = "http:";
-        return parsedUrl.toString().replace(/\/$/, "");
-      }
-    } catch {
-      return API_URL.replace(/\/$/, "");
-    }
-
     return API_URL.replace(/\/$/, "");
   }
 
   const protocol = request.nextUrl.protocol === "https:" ? "https" : "http";
   return `${protocol}://localhost:5000/api/v1`;
-}
-
-function isLocalhostHostname(hostname: string): boolean {
-  const normalizedHostname = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-
-  return (
-    normalizedHostname === "localhost" ||
-    normalizedHostname === "127.0.0.1" ||
-    normalizedHostname === "::1"
-  );
 }
 
 function redirectToLogin(request: NextRequest) {
@@ -126,6 +139,16 @@ function redirectToLogin(request: NextRequest) {
 }
 
 export async function middleware(request: NextRequest) {
+  if (ENFORCE_HTTPS && requestProtocol(request) !== "https") {
+    const redirectUrl = request.nextUrl.clone();
+    redirectUrl.protocol = "https:";
+    return NextResponse.redirect(redirectUrl, 308);
+  }
+
+  if (isPublicPath(request.nextUrl.pathname)) {
+    return NextResponse.next();
+  }
+
   const accessToken = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)?.value?.trim();
   if (!accessToken) {
     return redirectToLogin(request);
@@ -146,11 +169,45 @@ export async function middleware(request: NextRequest) {
     return redirectToLogin(request);
   }
 
-  if (!isAdminPath(request.nextUrl.pathname)) {
+  const pathname = request.nextUrl.pathname;
+  const canAccessAdmin = session.permissions.includes("admin_dashboard");
+  const privateModeActive = session.privateMode?.active === true;
+  const activationPath = session.privateMode?.activationPath || "/admin/private-mode";
+  const blockedPath = session.privateMode?.blockedPath || "/private-mode-required";
+
+  if (!privateModeActive) {
+    if (isPrivateModeActivationPath(pathname)) {
+      return canAccessAdmin
+        ? NextResponse.next()
+        : NextResponse.redirect(new URL(blockedPath, request.url));
+    }
+
+    if (isPrivateModeBlockedPath(pathname)) {
+      return canAccessAdmin
+        ? NextResponse.redirect(new URL(activationPath, request.url))
+        : NextResponse.next();
+    }
+
+    if (isAdminPath(pathname)) {
+      return canAccessAdmin
+        ? NextResponse.next()
+        : NextResponse.redirect(new URL("/", request.url));
+    }
+
+    return NextResponse.redirect(
+      new URL(canAccessAdmin ? activationPath : blockedPath, request.url)
+    );
+  }
+
+  if (isPrivateModeBlockedPath(pathname)) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  if (!isAdminPath(pathname)) {
     return NextResponse.next();
   }
 
-  if (session.permissions.includes("admin_dashboard")) {
+  if (canAccessAdmin) {
     return NextResponse.next();
   }
 
@@ -158,5 +215,13 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/c/:path*", "/admin/:path*"]
+  matcher: [
+    "/login",
+    "/",
+    "/c/:path*",
+    "/admin/:path*",
+    "/private-mode-required",
+    "/api/health",
+    "/api/session"
+  ]
 };

@@ -3,6 +3,16 @@ Security AI Lab - Local Start Info
 Run all commands from:
 f:\Projects\security-ai-lab
 
+FAST START
+
+Single command:
+npm run dev:up
+
+What it does:
+- starts the PostgreSQL Docker container on port 5433
+- starts the HTTPS backend on port 5000 if it is not already running
+- starts the HTTPS frontend on port 3000 if it is not already running
+
 FIRST TIME SETUP
 
 1. Install dependencies
@@ -13,55 +23,49 @@ Copy-Item .env.example .env
 Copy-Item backend\.env.example backend\.env
 Copy-Item frontend\.env.example.local frontend\.env.local
 
-3. Start Docker Desktop
+3. Leave backend\.env with:
+REDIS_URL=memory://local
 
-4. Start required containers
-docker compose up -d postgres redis ollama
+4. Install Ollama locally if you want live model replies
+ollama pull qwen2.5-coder
+ollama pull nomic-embed-text
 
-5. Pull Ollama models once
-docker exec security-ai-lab-ollama ollama pull qwen2.5-coder
-docker exec security-ai-lab-ollama ollama pull nomic-embed-text
+5. If your local PostgreSQL does not have pgvector, the app still starts
+RAG upload and retrieval stay disabled until pgvector is installed
 
-NORMAL START
+MANUAL START
 
-1. Make sure Docker Desktop is running
+1. Start PostgreSQL on port 5433
+docker compose up -d postgres
 
-2. Start containers
-docker compose up -d postgres redis ollama
-
-3. Start backend in terminal 1
+2. Start backend in terminal 1
 npm run dev:backend
 
-4. Start frontend in terminal 2
+3. Start frontend in terminal 2
 npm run dev:frontend
 
 OPEN IN BROWSER
 
 Frontend:
-http://localhost:3000
+https://localhost:3000
 
 Backend health:
-http://localhost:5000/health
+https://localhost:5000/health
 
 STOP
 
-Stop app terminals with Ctrl+C
+If you used the fast start command:
+npm run dev:down
 
-Stop containers:
-docker compose down
+If you started manually:
+Stop app terminals with Ctrl+C
 
 USEFUL CHECKS
 
-Check containers:
-docker compose ps
-
 Check backend health:
-Invoke-WebRequest http://localhost:5000/health
+curl.exe -k https://localhost:5000/health
 
-COMMON FIX FOR "localhost refused to connect"
+OPTIONAL MODELS
 
-1. Make sure Docker Desktop is open
-2. Run docker compose up -d postgres redis ollama
-3. Make sure backend terminal is running
-4. Make sure frontend terminal is running
-5. Confirm ports 3000 and 5000 are listening
+If you want local model responses too:
+docker compose up -d ollama

@@ -105,6 +105,27 @@ export class PrivateModeSessionRepository extends BaseRepository {
     return this.mapRow(result.rows[0]);
   }
 
+  async listActive(limit = 10): Promise<PrivateModeSessionEntity[]> {
+    const result = await this.pool.query(
+      `SELECT id,
+              workspace_id,
+              strategy,
+              exit_nodes,
+              circuit_ids,
+              started_at,
+              ended_at,
+              created_at,
+              updated_at
+         FROM private_mode_sessions
+        WHERE ended_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT $1`,
+      [Math.max(1, Math.min(100, Math.trunc(limit)))]
+    );
+
+    return result.rows.map((row) => this.mapRow(row));
+  }
+
   async updateRuntime(
     sessionId: string,
     input: {

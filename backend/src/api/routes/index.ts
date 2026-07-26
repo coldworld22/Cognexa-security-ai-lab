@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { AppContext } from "../../bootstrap/app-context";
 import { authMiddleware } from "../middlewares/auth.middleware";
+import { createPrivateModeRequiredMiddleware } from "../middlewares/private-mode-required.middleware";
 import { authorize } from "../middlewares/authorization.middleware";
 import { AdminController } from "../controllers/admin.controller";
 import { AgentController } from "../controllers/agent.controller";
@@ -12,6 +13,7 @@ import { LLMController } from "../controllers/llm.controller";
 import { MemoryController } from "../controllers/memory.controller";
 import { PenetrationTestController } from "../controllers/penetration-test.controller";
 import { PolicyController } from "../controllers/policy.controller";
+import { ProtectionController } from "../controllers/protection.controller";
 import { RagController } from "../controllers/rag.controller";
 import { ToolController } from "../controllers/tool.controller";
 import { WorkspaceController } from "../controllers/workspace.controller";
@@ -27,13 +29,17 @@ import { createEndpointRoutes } from "./endpoints.routes";
 import { createLlmRoutes } from "./llm.routes";
 import { createMemoryRoutes } from "./memory.routes";
 import { createPenetrationTestRoutes } from "./penetration-test.routes";
+import { createProtectionRoutes } from "./protection.routes";
 import { createRagRoutes } from "./rag.routes";
 import { createToolsRoutes } from "./tools.routes";
 import { createWorkspaceRoutes } from "./workspace.routes";
 
 export function createApiRouter(context: AppContext) {
   const router = Router();
-  const authController = new AuthController(context.services.auth);
+  const authController = new AuthController(
+    context.services.auth,
+    context.services.privateMode
+  );
   const chatController = new ChatController(context.services.chat);
   const endpointController = new EndpointController(context.services.endpoints);
   const llmController = new LLMController(context.services.llm);
@@ -41,6 +47,9 @@ export function createApiRouter(context: AppContext) {
   const ragController = new RagController(context.services.rag);
   const agentController = new AgentController(context.services.agent);
   const toolController = new ToolController(context.services.tools);
+  const protectionController = new ProtectionController(
+    context.services.systemProtection
+  );
   const workspaceController = new WorkspaceController(
     context.services.workspace,
     context.services.authorization
@@ -58,6 +67,11 @@ export function createApiRouter(context: AppContext) {
   router.use("/auth", createPublicAuthRoutes(authController));
   router.use("/endpoint-agents", createEndpointAgentRoutes(endpointController));
   router.use(authMiddleware(context.services.auth, context.services.authorization));
+  router.use(
+    "/protection",
+    createProtectionRoutes(protectionController, context.services.authorization)
+  );
+  router.use(createPrivateModeRequiredMiddleware(context.services.privateMode));
   router.use("/auth", createAuthenticatedAuthRoutes(authController));
   router.use("/workspaces", createWorkspaceRoutes(workspaceController));
   router.use(

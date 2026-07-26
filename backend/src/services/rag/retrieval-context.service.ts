@@ -8,6 +8,7 @@ import {
 } from "../../rag/retrieval/retrieval-context.types";
 
 interface RetrievalContextServiceConfig {
+  enabled?: boolean;
   maxChunks: number;
   similarityThreshold: number;
   maxContextTokens: number;
@@ -36,6 +37,10 @@ export class RetrievalContextService {
   async retrieveChunkMatches(
     input: RetrieveChunkMatchesInput
   ): Promise<RetrievedChunkMatch[]> {
+    if (this.config.enabled === false) {
+      return [];
+    }
+
     const query = input.query.trim();
     if (!query) {
       return [];

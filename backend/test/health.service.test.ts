@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { Pool } from "pg";
-import { RedisClientType } from "redis";
 
+import { KeyValueStore } from "../src/database/key-value-store";
 import { ProviderFactory } from "../src/llm/provider-factory";
 import { HealthService } from "../src/services/health/health.service";
 
@@ -20,7 +20,7 @@ function createHealthService(options: {
 
   const redis = {
     ping: async () => "PONG"
-  } as unknown as RedisClientType;
+  } as unknown as KeyValueStore;
 
   const providerFactory = {
     listProviders: async () => options.providers

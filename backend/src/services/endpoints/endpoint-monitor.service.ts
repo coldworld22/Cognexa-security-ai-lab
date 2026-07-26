@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import { randomUUID, timingSafeEqual } from "crypto";
 import { promises as dns } from "dns";
 import { EventEmitter } from "events";
+import { Socket } from "net";
 import { networkInterfaces } from "os";
 import { promisify } from "util";
 
@@ -105,12 +106,27 @@ export interface ObservedNetworkEndpoint {
   visibility: "network_only" | "agent";
   activityLevel: "basic_reachability" | "host_telemetry";
   agentInstalled: boolean;
+  deviceClassification: DeviceClassification;
+  connectivity: {
+    state: "online" | "offline" | "unverified";
+    source: "agent" | "reachability_probe" | "fortigate" | "stale_inventory";
+    checkedAt: string;
+    reason?: string;
+  };
   remoteAccess?: {
     provider: "guacamole" | "meshcentral" | "rustdesk" | "rdp" | "custom";
     mode: "embedded" | "external";
     label: string;
     launchUrl: string;
   };
+}
+
+export interface DeviceClassification {
+  category: "computer" | "phone" | "tablet" | "printer" | "camera" | "network" | "iot" | "unknown";
+  formFactor: "desktop" | "laptop" | "workstation" | "server" | "unknown";
+  confidence: "high" | "medium" | "low";
+  source: "agent" | "network_inference";
+  evidence: string[];
 }
 
 export interface NetworkScanResult {
@@ -164,6 +180,9 @@ interface DiscoveredHostRecord {
   vendor: string | null;
   resolutionSource: NetworkResolutionSource;
   resolutionCachedAt: string;
+  openComputerPorts: number[];
+  fortiGateDeviceType?: string;
+  fortiGateOperatingSystem?: string;
 }
 
 interface HostNameResolution {
@@ -520,7 +539,10 @@ export class EndpointMonitorService {
             lastSeenAt: host.checkedAt,
             metadata: {
               discoveryInterfaceName: host.interfaceName,
-              latencyMs: host.latencyMs
+              latencyMs: host.latencyMs,
+              openComputerPorts: host.openComputerPorts,
+              fortiGateDeviceType: host.fortiGateDeviceType,
+              fortiGateOperatingSystem: host.fortiGateOperatingSystem
             }
           })
         )
@@ -552,13 +574,18 @@ export class EndpointMonitorService {
             interfaceAddress:
               scan.subnets.find((subnet) => this.isIpInCidr(device.ipAddress, subnet.cidr))
                 ?.interfaceAddress ?? device.ipAddress,
-            status: "offline",
+            status: device.active === false ? "offline" : "online",
             resolutionSource: device.hostname ? "fortigate" : "unresolved",
             resolutionCachedAt: scan.scannedAt,
             lastSeenAt: scan.scannedAt,
             metadata: {
               discoveryInterfaceName: device.interfaceName ?? "fortigate",
-              importedFrom: "fortigate"
+              importedFrom: "fortigate",
+              fortiGateSourcePath: device.sourcePath,
+              fortiGateDeviceType: device.deviceType,
+              fortiGateOperatingSystem: device.operatingSystem,
+              fortiGateActive: device.active,
+              gatewayObservedAt: scan.scannedAt
             }
           })
         )
@@ -677,8 +704,11 @@ export class EndpointMonitorService {
           }
 
           try {
-            const result = await this.probeReachability(next.ipAddress, 500);
-            if (!result.reachable) {
+            const [result, openComputerPorts] = await Promise.all([
+              this.probeReachability(next.ipAddress, 500),
+              this.probeTcpPorts(next.ipAddress, [445, 3389, 5985, 5986], 350)
+            ]);
+            if (!result.reachable && openComputerPorts.length === 0) {
               continue;
             }
 
@@ -709,7 +739,10 @@ export class EndpointMonitorService {
               macAddress: identity.macAddress,
               vendor: identity.vendor,
               resolutionSource: identity.resolutionSource,
-              resolutionCachedAt: identity.resolutionCachedAt
+              resolutionCachedAt: identity.resolutionCachedAt,
+              openComputerPorts,
+              fortiGateDeviceType: fortiGateByIp.get(next.ipAddress)?.deviceType,
+              fortiGateOperatingSystem: fortiGateByIp.get(next.ipAddress)?.operatingSystem
             });
             discoveredCount += 1;
           } finally {
@@ -839,6 +872,11 @@ export class EndpointMonitorService {
   private toObservedEndpoint(
     host: NetworkDiscoveryHostEntity
   ): ObservedNetworkEndpoint {
+    const openComputerPorts = Array.isArray(host.metadata.openComputerPorts)
+      ? host.metadata.openComputerPorts.filter(
+          (port): port is number => typeof port === "number"
+        )
+      : [];
     return {
       id: host.ipAddress,
       displayName: this.toDisplayName(host.hostname, host.ipAddress),
@@ -866,6 +904,8 @@ export class EndpointMonitorService {
       visibility: "network_only",
       activityLevel: "basic_reachability",
       agentInstalled: false,
+      deviceClassification: this.classifyNetworkDevice(host, openComputerPorts),
+      connectivity: this.resolveNetworkConnectivity(host),
       remoteAccess: undefined
     };
   }
@@ -894,6 +934,12 @@ export class EndpointMonitorService {
       visibility: "agent",
       activityLevel: "host_telemetry",
       agentInstalled: true,
+      deviceClassification: this.classifyManagedEndpoint(endpoint),
+      connectivity: {
+        state: endpoint.status === "degraded" ? "online" : endpoint.status,
+        source: "agent",
+        checkedAt: endpoint.lastSeenAt
+      },
       remoteAccess: this.extractRemoteAccess(endpoint.metadata)
     };
   }
@@ -974,6 +1020,12 @@ export class EndpointMonitorService {
         visibility: "agent",
         activityLevel: "host_telemetry",
         agentInstalled: true,
+        deviceClassification: this.classifyManagedEndpoint(managedEndpoint),
+        connectivity: {
+          state: managedEndpoint.status === "degraded" ? "online" : managedEndpoint.status,
+          source: "agent",
+          checkedAt: managedEndpoint.lastSeenAt
+        },
         remoteAccess: this.extractRemoteAccess(managedEndpoint.metadata)
       });
     }
@@ -1074,6 +1126,175 @@ export class EndpointMonitorService {
         checkedAt
       };
     }
+  }
+
+  private async probeTcpPorts(
+    ipAddress: string,
+    ports: number[],
+    timeoutMs: number
+  ): Promise<number[]> {
+    const results = await Promise.all(
+      ports.map(
+        (port) =>
+          new Promise<number | null>((resolve) => {
+            const socket = new Socket();
+            let settled = false;
+            const finish = (value: number | null) => {
+              if (settled) return;
+              settled = true;
+              socket.destroy();
+              resolve(value);
+            };
+
+            socket.setTimeout(timeoutMs);
+            socket.once("connect", () => finish(port));
+            socket.once("timeout", () => finish(null));
+            socket.once("error", () => finish(null));
+            socket.connect(port, ipAddress);
+          })
+      )
+    );
+
+    return results.filter((port): port is number => port !== null);
+  }
+
+  private classifyManagedEndpoint(endpoint: ManagedEndpointEntity): DeviceClassification {
+    const declared = String(endpoint.metadata.formFactor ?? "").toLowerCase();
+    const validFormFactors = new Set(["desktop", "laptop", "workstation", "server"]);
+    const formFactor = validFormFactors.has(declared)
+      ? (declared as DeviceClassification["formFactor"])
+      : this.inferComputerFormFactor(endpoint.hostname, endpoint.operatingSystem);
+
+    return {
+      category: "computer",
+      formFactor,
+      confidence: formFactor === "unknown" ? "medium" : "high",
+      source: "agent",
+      evidence: [
+        "Endpoint agent telemetry",
+        ...(formFactor !== "unknown" ? [`Reported chassis: ${formFactor}`] : [])
+      ]
+    };
+  }
+
+  private resolveNetworkConnectivity(
+    host: NetworkDiscoveryHostEntity
+  ): ObservedNetworkEndpoint["connectivity"] {
+    const observationAgeMs = Date.now() - new Date(host.lastSeenAt).getTime();
+    const isFresh = observationAgeMs <= 5 * 60 * 1000;
+    const importedFromFortiGate = host.metadata.importedFrom === "fortigate";
+
+    if (!isFresh) {
+      return {
+        state: "unverified",
+        source: "stale_inventory",
+        checkedAt: host.lastSeenAt,
+        reason: "No recent reachability or gateway observation"
+      };
+    }
+
+    if (importedFromFortiGate) {
+      return {
+        state: host.status,
+        source: "fortigate",
+        checkedAt: String(host.metadata.gatewayObservedAt ?? host.lastSeenAt)
+      };
+    }
+
+    return {
+      state: host.status,
+      source: "reachability_probe",
+      checkedAt: host.lastSeenAt
+    };
+  }
+
+  private classifyNetworkDevice(
+    host: NetworkDiscoveryHostEntity,
+    openComputerPorts: number[]
+  ): DeviceClassification {
+    const deviceType = String(host.metadata.fortiGateDeviceType ?? "");
+    const operatingSystem = String(host.metadata.fortiGateOperatingSystem ?? "");
+    const identity = `${host.hostname} ${host.vendor ?? ""} ${deviceType} ${operatingSystem}`.toLowerCase();
+    const result = (
+      category: DeviceClassification["category"],
+      formFactor: DeviceClassification["formFactor"],
+      confidence: DeviceClassification["confidence"],
+      evidence: string[]
+    ): DeviceClassification => ({
+      category,
+      formFactor,
+      confidence,
+      source: "network_inference",
+      evidence
+    });
+
+    if (/hikvision|dahua|axis|camera|\bcam\b|\bnvr\b|\bdvr\b/.test(identity)) {
+      return result("camera", "unknown", "high", ["Camera/NVR identity pattern"]);
+    }
+    if (/fortinet|fortigate|cisco|ubiquiti|tp-link|zioncom|\bswitch\b|\brouter\b|\bgateway\b|access.point|\bap[-_\d]/.test(identity)) {
+      return result("network", "unknown", "high", ["Network equipment identity pattern"]);
+    }
+    if (/\biphone\b|android|honor|infinix|galaxy|s24|pixel|smartphone|\bphone\b/.test(identity)) {
+      return result("phone", "unknown", "high", ["Mobile device identity pattern"]);
+    }
+    if (/\bipad\b|\btablet\b/.test(identity)) {
+      return result("tablet", "unknown", "high", ["Tablet identity pattern"]);
+    }
+    if (/\bprinter\b|brother|epson|xerox|\bcanon\b|\bhp[a-z0-9]{5,}\b/.test(identity)) {
+      return result("printer", "unknown", "high", ["Printer identity pattern"]);
+    }
+
+    const evidence: string[] = [];
+    if (/\b(pc|computer|workstation|desktop|laptop|notebook)\b/.test(deviceType.toLowerCase())) {
+      evidence.push(`FortiGate device type: ${deviceType}`);
+    }
+    if (/windows|macos|mac os|ubuntu|debian|fedora|chrome os/.test(operatingSystem.toLowerCase())) {
+      evidence.push(`FortiGate operating system: ${operatingSystem}`);
+    }
+    if (host.resolutionSource === "netbios" || host.resolutionSource === "smb") {
+      evidence.push(`${host.resolutionSource.toUpperCase()} computer naming`);
+    }
+    if (openComputerPorts.length > 0) {
+      evidence.push(`Windows management service: ${openComputerPorts.join(", ")}`);
+    }
+    if (/\bdesktop[-_]/.test(identity)) evidence.push("Desktop hostname pattern");
+    if (/laptop|notebook|surface|thinkpad|elitebook|probook|latitude|vivobook/.test(identity)) {
+      evidence.push("Laptop model/hostname pattern");
+    }
+    if (/\b(dell|lenovo|hewlett.packard|hp inc|intel corporate|microsoft)\b/.test(identity)) {
+      evidence.push("Computer manufacturer");
+    }
+
+    if (evidence.length > 0) {
+      const formFactor = this.inferComputerFormFactor(
+        `${host.hostname} ${deviceType}`,
+        operatingSystem
+      );
+      const strongSignal = openComputerPorts.length > 0 ||
+        host.resolutionSource === "netbios" || host.resolutionSource === "smb";
+      return result(
+        "computer",
+        formFactor,
+        strongSignal || formFactor !== "unknown" ? "high" : "medium",
+        evidence
+      );
+    }
+
+    return result("unknown", "unknown", "low", ["Insufficient network evidence"]);
+  }
+
+  private inferComputerFormFactor(
+    hostname: string,
+    operatingSystem: string
+  ): DeviceClassification["formFactor"] {
+    const identity = `${hostname} ${operatingSystem}`.toLowerCase();
+    if (/laptop|notebook|surface|thinkpad|elitebook|probook|latitude|vivobook/.test(identity)) {
+      return "laptop";
+    }
+    if (/workstation/.test(identity)) return "workstation";
+    if (/\bserver\b|windows server/.test(identity)) return "server";
+    if (/\bdesktop[-_]/.test(identity)) return "desktop";
+    return "unknown";
   }
 
   private extractLatency(stdout: string): number | null {

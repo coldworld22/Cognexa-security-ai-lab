@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import {
+  PrivateModeCapabilities,
   PolicyCategory,
   PrivateModeCircuitStatus,
   PrivateModeConnectionIdentity,
@@ -32,6 +33,7 @@ import {
   PrivateModeLeakTestResult,
   PrivateModeRelayNode,
   PrivateModeSession,
+  PrivateModeSessionState,
   PrivateModeTlsFingerprintProfile,
   PrivateModeVerificationResult
 } from "@/lib/types";
@@ -81,6 +83,7 @@ const ACTIVATION_STAGES: ActivationStage[] = [
   "active"
 ];
 const VERIFY_STAGE_INDEX = ACTIVATION_STAGES.indexOf("verify");
+const LIVE_STATE_REFRESH_INTERVAL_MS = 15_000;
 
 function parseRelayNodes(value: string): PrivateModeRelayNode[] {
   const trimmed = value.trim();
@@ -115,6 +118,7 @@ export function PrivateModeConsole() {
   const [session, setSession] = useState<PrivateModeSession | null>(null);
   const [circuit, setCircuit] = useState<PrivateModeCircuitStatus | null>(null);
   const [logs, setLogs] = useState<PrivateModeExitLog[]>([]);
+  const [capabilities, setCapabilities] = useState<PrivateModeCapabilities | null>(null);
   const [verification, setVerification] =
     useState<PrivateModeVerificationResult | null>(null);
   const [leakTest, setLeakTest] = useState<PrivateModeLeakTestResult | null>(null);
@@ -122,6 +126,7 @@ export function PrivateModeConsole() {
   const [exitGeoInput, setExitGeoInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [transportSecure, setTransportSecure] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isActivating, setIsActivating] = useState(false);
@@ -138,6 +143,38 @@ export function PrivateModeConsole() {
     void loadState();
   }, []);
 
+  useEffect(() => {
+    if (
+      !session ||
+      isLoading ||
+      isActivating ||
+      isDeactivating ||
+      isSaving ||
+      isRotating ||
+      isVerifying ||
+      isLeakTesting
+    ) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void refreshRuntimeState();
+    }, LIVE_STATE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    session?.id,
+    isLoading,
+    isActivating,
+    isDeactivating,
+    isSaving,
+    isRotating,
+    isVerifying,
+    isLeakTesting
+  ]);
+
   async function loadState() {
     setIsLoading(true);
     setError(null);
@@ -150,19 +187,9 @@ export function PrivateModeConsole() {
       ]);
 
       applyConfig(nextConfig);
-      setSession(nextSessionState.session);
-      setCircuit(nextSessionState.circuit);
       setLogs(nextLogs);
       setActivationFailureMessage(null);
-
-      if (nextSessionState.session) {
-        setVerification(null);
-        setLeakTest(null);
-        void refreshIdentitySnapshot(false);
-      } else {
-        setVerification(null);
-        setLeakTest(null);
-      }
+      applyRuntimeState(nextSessionState);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : t("privateMode.loadFailed"));
     } finally {
@@ -174,6 +201,69 @@ export function PrivateModeConsole() {
     setConfig(nextConfig);
     setRelayJson(JSON.stringify(nextConfig.vpnRelays, null, 2));
     setExitGeoInput(nextConfig.exitGeographyPreference.join(", "));
+  }
+
+  function buildRuntimeNotice(nextSessionState: PrivateModeSessionState): string | null {
+    if (!nextSessionState.session) {
+      return null;
+    }
+
+    if (nextSessionState.verificationError) {
+      return nextSessionState.verificationError;
+    }
+
+    if (nextSessionState.routeVerified) {
+      return t("privateMode.readyNotice");
+    }
+
+    if (nextSessionState.verification) {
+      return nextSessionState.transportSecure
+        ? t("privateMode.warningNotice")
+        : t("privateMode.httpTransportWarning");
+    }
+
+    return t("privateMode.pendingNotice");
+  }
+
+  function applyRuntimeState(nextSessionState: PrivateModeSessionState) {
+    setCapabilities(nextSessionState.capabilities);
+    setSession(nextSessionState.session);
+    setCircuit(nextSessionState.circuit);
+    setTransportSecure(nextSessionState.transportSecure);
+    setVerification(nextSessionState.verification);
+    setNotice(buildRuntimeNotice(nextSessionState));
+
+    if (!nextSessionState.session) {
+      setLeakTest(null);
+      setActivationStage(null);
+      return;
+    }
+
+    setActivationStage(
+      isRouteReady(nextSessionState.verification, nextSessionState.transportSecure)
+        ? "active"
+        : "verify"
+    );
+  }
+
+  async function refreshRuntimeState(surfaceErrors = false) {
+    try {
+      const [nextSessionState, nextLogs] = await Promise.all([
+        getPrivateModeSession(),
+        listPrivateModeExitLogs()
+      ]);
+
+      setLogs(nextLogs);
+      applyRuntimeState(nextSessionState);
+    } catch (runtimeError) {
+      if (surfaceErrors) {
+        setError(
+          runtimeError instanceof Error
+            ? runtimeError.message
+            : t("privateMode.loadFailed")
+        );
+      }
+    }
   }
 
   function buildPayload(): Partial<PrivateModeConfig> {
@@ -245,6 +335,15 @@ export function PrivateModeConsole() {
     };
   }
 
+  function isRouteReady(
+    nextVerification: PrivateModeVerificationResult | null,
+    nextTransportSecure = transportSecure
+  ): boolean {
+    return Boolean(
+      nextTransportSecure && nextVerification?.isCloaked && nextVerification.transportVerified
+    );
+  }
+
   async function handleSave() {
     setIsSaving(true);
     setError(null);
@@ -267,13 +366,17 @@ export function PrivateModeConsole() {
     setError(null);
     setNotice(null);
     setVerification(null);
+    setLeakTest(null);
     setActivationFailureMessage(null);
     setActivationStage("profile");
 
     try {
       const payload = buildPayload();
       const nextConfig = await updatePrivateModeConfig(payload);
-      applyConfig(nextConfig);
+      applyConfig({
+        ...nextConfig,
+        mode: "cloaked"
+      });
 
       setActivationStage("session");
       const nextSession = await activatePrivateMode(payload);
@@ -284,24 +387,12 @@ export function PrivateModeConsole() {
         listPrivateModeExitLogs(),
         getPrivateModeSession()
       ]);
-      setSession(nextSessionState.session);
-      setCircuit(nextSessionState.circuit);
       setLogs(nextLogs);
+      applyRuntimeState(nextSessionState);
 
       setActivationStage("verify");
-      try {
-        const snapshot = await refreshIdentitySnapshot(false);
-
-        if (snapshot.verification?.isCloaked && snapshot.verification.transportVerified) {
-          setActivationStage("active");
-          setNotice(t("privateMode.readyNotice"));
-        } else if (snapshot.verification) {
-          setNotice(t("privateMode.warningNotice"));
-        } else {
-          setNotice(t("privateMode.pendingNotice"));
-        }
-      } catch {
-        setNotice(t("privateMode.pendingNotice"));
+      if (isRouteReady(nextSessionState.verification, nextSessionState.transportSecure)) {
+        setActivationStage("active");
       }
     } catch (activateError) {
       const message =
@@ -377,14 +468,14 @@ export function PrivateModeConsole() {
       const snapshot = await refreshIdentitySnapshot(false);
       const nextVerification = snapshot.verification;
       setActivationStage(
-        nextVerification?.isCloaked && nextVerification.transportVerified
-          ? "active"
-          : "verify"
+        isRouteReady(nextVerification) ? "active" : "verify"
       );
       setNotice(
-        nextVerification?.isCloaked && nextVerification.transportVerified
+        isRouteReady(nextVerification)
           ? t("privateMode.verified")
-          : t("privateMode.verificationWarnings")
+          : transportSecure
+            ? t("privateMode.verificationWarnings")
+            : t("privateMode.httpTransportWarning")
       );
     } catch (verifyError) {
       setError(
@@ -426,7 +517,7 @@ export function PrivateModeConsole() {
     });
   }
 
-  if (isLoading || !config) {
+  if (isLoading) {
     return (
       <Card className="bg-white/82 p-6 text-sm text-[var(--text-secondary)]">
         {t("privateMode.loading")}
@@ -434,10 +525,24 @@ export function PrivateModeConsole() {
     );
   }
 
+  if (!config) {
+    return (
+      <Card className="space-y-3 bg-white/82 p-6 text-sm text-[var(--text-secondary)]">
+        <p>{error ?? t("privateMode.loadFailed")}</p>
+        <button
+          type="button"
+          onClick={() => void loadState()}
+          className="inline-flex w-fit items-center gap-2 rounded-xl bg-ink px-4 py-2 font-semibold text-white transition hover:bg-black"
+        >
+          <RefreshCcw className="size-4" />
+          {t("common.refresh")}
+        </button>
+      </Card>
+    );
+  }
+
   const active = Boolean(session);
-  const routeVerified = Boolean(
-    verification?.isCloaked && verification.transportVerified
-  );
+  const routeVerified = isRouteReady(verification);
   const currentStageIndex =
     activationStage === null ? 0 : ACTIVATION_STAGES.indexOf(activationStage);
   const bannerState: ActivationBannerState = isActivating
@@ -490,10 +595,19 @@ export function PrivateModeConsole() {
     t("privateMode.unknown");
   const directLocation = formatIdentityLocation(directIdentity);
   const exitLocation = formatIdentityLocation(exitIdentity);
+  const torBackedStrategyLabels = (capabilities?.torBackedStrategies ?? []).map((strategy) =>
+    t(`privateMode.strategies.${strategy}`)
+  );
+  const externalTunnelStrategyLabels = (
+    capabilities?.externalTunnelRequiredStrategies ?? []
+  ).map((strategy) => t(`privateMode.strategies.${strategy}`));
 
   function translateLeak(code: string): string {
     switch (code) {
       case "private_mode_inactive":
+      case "system_proxy_inactive":
+      case "webrtc_protection_incomplete":
+      case "ip_leak_rules_inactive":
       case "exit_ip_unavailable":
       case "tor_exit_unconfirmed":
       case "exit_ip_matches_direct_path":
@@ -510,6 +624,10 @@ export function PrivateModeConsole() {
       case "hybrid_sensitive_categories_only":
       case "hybrid_sensitive_categories_disabled":
       case "rotating_proxy_uses_tor_transport":
+      case "browser_proxy_review_required":
+      case "app_proxy_enforcement_incomplete":
+      case "system_dns_not_forced":
+      case "fingerprint_hardening_incomplete":
         return t(`privateMode.advisoryCodes.${code}`);
       default:
         return code;
@@ -597,6 +715,32 @@ export function PrivateModeConsole() {
             <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-secondary)]">
               {t("privateMode.description")}
             </p>
+            {capabilities ? (
+              <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50/75 p-4 text-sm text-amber-900">
+                <p className="font-semibold">{t("privateMode.capabilityTitle")}</p>
+                <p className="mt-2 leading-6 text-amber-800">
+                  {t("privateMode.capabilityDescription")}
+                </p>
+                <div className="mt-3 space-y-2 leading-6">
+                  <p>
+                    <span className="font-semibold">{t("privateMode.torBackedStrategies")}:</span>{" "}
+                    {torBackedStrategyLabels.join(", ") || t("privateMode.none")}
+                  </p>
+                  <p>
+                    <span className="font-semibold">
+                      {t("privateMode.externalTunnelStrategies")}:
+                    </span>{" "}
+                    {externalTunnelStrategyLabels.join(", ") || t("privateMode.none")}
+                  </p>
+                  {capabilities.requestIdentityProfilesAdjustHeadersOnly ? (
+                    <p>{t("privateMode.headerProfileNotice")}</p>
+                  ) : null}
+                  {!capabilities.tlsHandshakeSpoofing ? (
+                    <p>{t("privateMode.tlsSpoofingUnavailable")}</p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="rounded-[22px] border border-black/8 bg-[var(--surface-soft)] p-4 lg:max-w-md">
             <p className="text-sm font-semibold text-[var(--text-primary)]">

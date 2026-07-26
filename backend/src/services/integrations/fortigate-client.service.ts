@@ -15,6 +15,9 @@ export interface FortiGateKnownDevice {
   macAddress?: string;
   vendor?: string;
   interfaceName?: string;
+  deviceType?: string;
+  operatingSystem?: string;
+  active?: boolean;
   sourcePath: string;
 }
 
@@ -199,8 +202,22 @@ export class FortiGateClientService {
       ]);
       const vendor = this.pickString(record, [
         "vendor",
-        "manufacturer",
-        "os_name"
+        "manufacturer"
+      ]);
+      const deviceType = this.pickString(record, [
+        "device_type",
+        "device-type",
+        "hardware_type",
+        "hardware-type",
+        "category",
+        "type"
+      ]);
+      const operatingSystem = this.pickString(record, [
+        "os_name",
+        "os-name",
+        "operating_system",
+        "operating-system",
+        "os"
       ]);
       const interfaceName = this.pickString(record, [
         "interface",
@@ -208,6 +225,9 @@ export class FortiGateClientService {
         "interface_name",
         "devname"
       ]);
+      const active = sourcePath.includes("/arp")
+        ? true
+        : this.pickBoolean(record, ["active", "online", "is_online", "connected", "status"]);
 
       candidates.push({
         ipAddress,
@@ -215,6 +235,9 @@ export class FortiGateClientService {
         macAddress,
         vendor,
         interfaceName,
+        deviceType,
+        operatingSystem,
+        active,
         sourcePath
       });
     }
@@ -263,6 +286,9 @@ export class FortiGateClientService {
       macAddress: existing.macAddress ?? incoming.macAddress,
       vendor: existing.vendor ?? incoming.vendor,
       interfaceName: existing.interfaceName ?? incoming.interfaceName,
+      deviceType: existing.deviceType ?? incoming.deviceType,
+      operatingSystem: existing.operatingSystem ?? incoming.operatingSystem,
+      active: existing.active ?? incoming.active,
       sourcePath: existing.sourcePath
     };
   }
@@ -275,6 +301,28 @@ export class FortiGateClientService {
       const direct = record[key];
       if (typeof direct === "string" && direct.trim()) {
         return direct.trim();
+      }
+    }
+
+    return undefined;
+  }
+
+  private pickBoolean(
+    record: Record<string, unknown>,
+    keys: string[]
+  ): boolean | undefined {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return value !== 0;
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["true", "1", "up", "online", "active", "connected"].includes(normalized)) {
+          return true;
+        }
+        if (["false", "0", "down", "offline", "inactive", "disconnected"].includes(normalized)) {
+          return false;
+        }
       }
     }
 

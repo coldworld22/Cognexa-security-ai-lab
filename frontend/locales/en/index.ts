@@ -194,9 +194,9 @@ const en = {
     workspaceLabel: "Workspace"
   },
   chat: {
-    startTaskTitle: "Start with a concrete engineering task.",
+    startTaskTitle: "What do you want to work on?",
     startTaskDescription:
-      "Ask about the codebase, uploaded files, memory context, or use the workspace tabs to inspect agents, tasks, and security operations.",
+      "Ask about the codebase, uploaded files, memory context, or open the workspace tabs when you need agents, task traces, or security tools.",
     starterCards: {
       security: {
         eyebrow: "Security Review",
@@ -217,6 +217,10 @@ const en = {
     assistant: "Assistant",
     you: "You",
     thinking: "Thinking...",
+    quickPrompts: "Quick prompts",
+    sources: "Sources",
+    matchScore: "{score} match",
+    copyMessage: "Copy",
     modelUnassigned: "Model unassigned",
     personalWorkspace: "Personal workspace"
   },
@@ -224,7 +228,7 @@ const en = {
     runtime: "Runtime",
     providerNotInstalled: "{provider} (not installed)",
     noInstalledModels: "No installed models",
-    placeholder: "Ask Cognexa to inspect code, memory, tools, or retrieval context",
+    placeholder: "Message Cognexa about code, files, tools, or retrieval context",
     responding: "Responding...",
     send: "Send",
     enterToSend: "Enter to send. Shift + Enter for a new line.",
@@ -386,7 +390,10 @@ const en = {
     label: "Private Mode",
     title: "Cloak outbound testing traffic behind controlled anonymity layers",
     description:
-      "Configure Tor-first routing, staged VPN relay chains, or hybrid cloaking before security testing workflows leave the platform. The current implementation routes the governed web-scanning and authorized-testing paths through this service.",
+      "Configure the governed outbound route used by website scanning and authorized testing. Tor-backed routing is implemented in-process, while VPN-chain profiles still depend on external tunnel plumbing outside the app.",
+    capabilityTitle: "Capability boundary",
+    capabilityDescription:
+      "Private Mode verifies and records the route it uses, but it does not implement in-process VPN orchestration or TLS handshake spoofing.",
     loading: "Loading private mode state...",
     loadFailed: "Failed to load private mode state.",
     refresh: "Refresh",
@@ -423,19 +430,25 @@ const en = {
     strategy: "Routing strategy",
     strategies: {
       tor: "Tor only",
-      "vpn-chain": "VPN chain",
-      hybrid: "Hybrid",
-      "rotating-proxy": "Rotating proxy"
+      "vpn-chain": "VPN chain (external)",
+      hybrid: "Hybrid (Tor for sensitive categories)",
+      "rotating-proxy": "Tor circuit rotation"
     },
     dnsTor: "DNS over Tor",
     dnsLocal: "Local DNS",
     dnsOverTor: "Resolve DNS through the cloaked transport when possible",
-    tlsFingerprint: "TLS fingerprint profile",
+    tlsFingerprint: "Request identity profile",
     fingerprintProfiles: {
-      browser: "Browser",
-      curl: "curl",
-      random: "Random"
+      browser: "Browser-like headers",
+      curl: "curl headers",
+      random: "Rotating User-Agent headers"
     },
+    torBackedStrategies: "Tor-backed strategies",
+    externalTunnelStrategies: "External tunnel required",
+    headerProfileNotice:
+      "These profiles only adjust HTTP request headers such as User-Agent.",
+    tlsSpoofingUnavailable:
+      "The app does not spoof the TLS handshake or JA3 fingerprint.",
     torSocksPort: "Tor SOCKS port",
     torControlPort: "Tor control port",
     rotationInterval: "Circuit rotation interval (sec)",
@@ -471,12 +484,23 @@ const en = {
     requiredForSecurityModules:
       "Private Mode must be active before using website scanning or security testing modules.",
     verifiedRequiredForSecurityModules:
-      "Private Mode must be active and its exit path verified before using website scanning or security testing modules.",
+      "Private Mode must be active, its exit path verified, and the deployment must be running on HTTPS before using website scanning or security testing modules.",
     activateBeforeSecurityTools:
       "Activate Private Mode first, then return to this tool.",
     verifyBeforeSecurityTools:
-      "Verify the exit path in Private Mode, then return to this tool.",
+      "Review the exit path and HTTPS transport in Private Mode, then return to this tool.",
     openConsole: "Open Private Mode",
+    requiredPage: {
+      label: "Private Mode Required",
+      activateTitle: "Activate Private Mode before using this workspace",
+      waitTitle: "This workspace is locked until Private Mode is activated",
+      activateDescription:
+        "This workspace now requires Private Mode to be active before chat, tools, agents, documents, or admin screens can be used.",
+      waitDescription:
+        "An administrator must activate Private Mode for this workspace before anything else becomes available.",
+      openConsole: "Open Private Mode",
+      checkAgain: "Check again"
+    },
     activationTimelineTitle: "Connection stage",
     connectionProgress: "Stage {current} of {total}",
     connectionStates: {
@@ -505,7 +529,7 @@ const en = {
       connected:
         "The cloaked session is established and the latest verification confirmed an isolated exit path. Website scanning and authorized security workflows can proceed.",
       warning:
-        "The cloaked session is up, but the latest verification reported leaks or an unconfirmed exit route. Review the verification result before using security modules.",
+        "The cloaked session is up, but the latest verification reported leaks, an unconfirmed exit route, or an insecure HTTP deployment transport. Review the verification result before using security modules.",
       failed:
         "Activation stopped before the cloaked route was ready. Review the failed stage, adjust the profile if needed, and retry the connection."
     },
@@ -535,7 +559,7 @@ const en = {
       verify: {
         title: "Verify exit path",
         description:
-          "Check the observed exit IP and leak indicators before treating the route as ready for security operations."
+          "Check the observed exit IP, leak indicators, and deployment HTTPS transport before treating the route as ready for security operations."
       },
       active: {
         title: "Unlock security tools",
@@ -557,6 +581,8 @@ const en = {
       "Private Mode is active, but verification reported warnings on the current exit route.",
     verificationWarnings:
       "Verification completed with warnings. Review the exit path before continuing.",
+    httpTransportWarning:
+      "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before treating the route as ready for security operations.",
     snapshotTitle: "Connection snapshot",
     snapshotHeading: "Direct identity versus cloaked identity",
     snapshotDescription:
@@ -591,6 +617,12 @@ const en = {
     },
     leakCodes: {
       private_mode_inactive: "Private Mode is not active for this workspace.",
+      system_proxy_inactive:
+        "Windows system proxy enforcement is not fully active, so browser and app traffic may bypass the cloaked route.",
+      webrtc_protection_incomplete:
+        "WebRTC leak protections are incomplete, so browsers may still expose network identity through peer-connection paths.",
+      ip_leak_rules_inactive:
+        "The firewall leak-prevention rules are not active, so direct DNS, STUN, QUIC, or browser bypass traffic may escape.",
       exit_ip_unavailable: "The service could not observe an exit IP for the current route.",
       tor_exit_unconfirmed: "The verification path should be Tor-backed, but the observed exit was not confirmed as a Tor exit.",
       exit_ip_matches_direct_path:
@@ -606,7 +638,15 @@ const en = {
       hybrid_sensitive_categories_disabled:
         "Hybrid mode fell back to an external URL path for verification because the sensitive cloaked categories are not enabled in this profile.",
       rotating_proxy_uses_tor_transport:
-        "Rotating proxy currently uses the Tor-backed transport inside the app rather than a separate managed proxy pool."
+        "Rotating proxy currently uses the Tor-backed transport inside the app rather than a separate managed proxy pool.",
+      browser_proxy_review_required:
+        "Protected browser shortcuts or browser policy bindings are incomplete. Review the desktop launchers before sensitive browsing.",
+      app_proxy_enforcement_incomplete:
+        "App-level enforcement could not confirm both the system proxy bridge and the browser kill-switch rules together.",
+      system_dns_not_forced:
+        "DNS-over-Tor was requested, but the local Tor DNS listener was unavailable or Windows adapter DNS could not be pinned to localhost.",
+      fingerprint_hardening_incomplete:
+        "Fingerprint hardening is incomplete, so protected browser profiles still need review before high-sensitivity browsing."
     }
   },
   adminNetwork: {
@@ -634,6 +674,49 @@ const en = {
     runtimeNote:
       "The scan runs from the backend server. If the backend is running inside Docker or another isolated network, results may reflect that runtime network instead of your full Wi-Fi LAN.",
     searchPlaceholder: "Search by hostname, IP, vendor, subnet, MAC, or interface",
+    computersOnly: "Computers only",
+    computersAndCandidates: "Computers + unclassified candidates",
+    verifiedComputersOnly: "Classified computers only",
+    allDeviceTypes: "All device types",
+    computersDetected: "Computers detected",
+    laptops: "Laptops",
+    desktops: "Desktops",
+    unknownComputerType: "Type not verified",
+    unclassifiedCandidates: "Unclassified candidates",
+    statusChecked: "Status checked: {value}",
+    connectivityStates: {
+      online: "Online",
+      offline: "Offline",
+      unverified: "Status unverified"
+    },
+    noComputersClassified:
+      "Devices were discovered, but none has enough evidence to be classified as a computer. Run Resolve names and verify that SMB, RDP, or WinRM is reachable from this server.",
+    deviceClassification: "Device classification",
+    insufficientEvidence: "Insufficient network evidence",
+    agentNeededForChassis:
+      "Install the endpoint heartbeat on this PC to verify laptop versus desktop from Windows chassis data.",
+    confidence: {
+      high: "High confidence",
+      medium: "Medium confidence",
+      low: "Low confidence"
+    },
+    deviceCategories: {
+      computer: "Computer",
+      phone: "Phone",
+      tablet: "Tablet",
+      printer: "Printer",
+      camera: "Camera",
+      network: "Network equipment",
+      iot: "IoT device",
+      unknown: "Unknown device"
+    },
+    formFactors: {
+      desktop: "Desktop",
+      laptop: "Laptop",
+      workstation: "Workstation",
+      server: "Server",
+      unknown: "Laptop/desktop not verified"
+    },
     allStatuses: "All statuses",
     allSources: "All sources",
     lastScanned: "Last scanned: {value}",
@@ -783,6 +866,106 @@ const en = {
       content: "Content",
       cors: "CORS",
       exposure: "Exposure"
+    }
+  },
+  mobileScanner: {
+    label: "Mobile Testing",
+    navLabel: "Mobile Testing",
+    launchDescription:
+      "Open the mobile application security lab on its own screen for APK, AAB, and IPA analysis with persisted history and exportable reports.",
+    screenTitle: "Mobile application security testing",
+    screenDescription:
+      "Upload APK, AAB, or IPA packages, route analysis through verified Private Mode, and review saved MobSF-backed findings, permissions, trackers, and recommendations.",
+    title: "Run mobile app security scans",
+    description:
+      "This lab performs static mobile application analysis through the backend MobSF integration and stores each completed report in the current workspace.",
+    policyTitle: "Execution model",
+    policyDescription:
+      "The backend performs a synchronous MobSF scan and saves the completed result when the request finishes. The frontend shows estimated progress while analysis is running and then reloads the saved history.",
+    boundaryTitle: "Supported packages",
+    boundaryDescription:
+      "APK, AAB, and IPA files up to 100 MB are supported. The current workflow performs static analysis only and does not launch the application.",
+    uploadLabel: "Application package",
+    uploadHint: "Drag a package here or browse for an APK, AAB, or IPA file.",
+    uploadActive: "Drop the mobile package to start validation.",
+    uploadEmpty: "No mobile package selected yet.",
+    chooseAnother: "Choose another file",
+    fileReady: "Ready to scan",
+    fileTypeInvalid: "Only APK, AAB, and IPA files are supported.",
+    fileTooLarge: "The selected file exceeds the 100 MB upload limit.",
+    fileRequired: "Select a mobile package before starting the scan.",
+    scan: "Start mobile scan",
+    scanning: "Scanning...",
+    scanFailed: "Mobile scan failed.",
+    scanCompleted: "Mobile scan completed.",
+    scanDate: "Scan date",
+    packageName: "Package name",
+    version: "Version",
+    targetSdk: "Target SDK",
+    minSdk: "Minimum SDK",
+    fileSize: "File size",
+    riskLevel: "Risk level",
+    findings: "Findings",
+    totalFindings: "Total findings",
+    riskyPermissions: "Risky permissions",
+    detectedTrackers: "Detected trackers",
+    historyTitle: "Recent mobile scans",
+    historyDescription:
+      "Completed mobile scan reports saved for the current workspace.",
+    historyEmpty: "No mobile scan history is available yet.",
+    historyLoading: "Loading mobile scan history...",
+    historyLoadFailed: "Failed to load mobile scan history.",
+    resultEmpty:
+      "Select a previous scan or upload a package to inspect the stored report.",
+    viewDetails: "View details",
+    deleteConfirm: "Delete the stored mobile scan for {appName}?",
+    deleteFailed: "Failed to delete the mobile scan.",
+    deleted: "Mobile scan deleted.",
+    exportPdf: "Export PDF",
+    exportJson: "Export JSON",
+    exportFailed: "Failed to export the mobile scan report.",
+    exporting: "Exporting...",
+    progressUploading: "Uploading package",
+    progressAnalyzing: "Running MobSF analysis",
+    progressReporting: "Parsing findings and saving the report",
+    progressFinalizing: "Finalizing report",
+    summary: "Summary",
+    appInfo: "Application details",
+    score: "Security score",
+    scoreGood: "Lower observed risk",
+    scoreNeedsWork: "Needs hardening",
+    scoreCritical: "Immediate review required",
+    permissions: "Permissions",
+    vulnerabilities: "Vulnerabilities",
+    trackers: "Trackers",
+    trackersNone: "No trackers detected in this package.",
+    recommendations: "Recommendations",
+    recommendationsEmpty:
+      "No additional recommendations were generated automatically for this scan.",
+    remediation: "Remediation",
+    noVulnerabilities:
+      "No vulnerability entries were reported in this mobile scan result.",
+    noPermissions: "No permissions were reported in this mobile scan result.",
+    helpUploadTitle: "Package support",
+    helpUploadDescription:
+      "Upload APK, AAB, or IPA archives for MobSF-backed static analysis.",
+    helpScoreTitle: "Scoring",
+    helpScoreDescription:
+      "Scores above 70 indicate lower observed risk. Scores below 50 should be reviewed immediately.",
+    helpRouteTitle: "Private routing",
+    helpRouteDescription:
+      "Security modules stay gated behind verified Private Mode before a mobile scan can start.",
+    permissionsRisk: {
+      low: "Low risk",
+      medium: "Medium risk",
+      high: "High risk"
+    },
+    severities: {
+      critical: "Critical",
+      high: "High",
+      medium: "Medium",
+      low: "Low",
+      info: "Info"
     }
   },
   securityReview: {

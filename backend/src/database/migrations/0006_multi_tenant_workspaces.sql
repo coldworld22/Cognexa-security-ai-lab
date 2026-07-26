@@ -84,7 +84,7 @@ ALTER TABLE messages
 ALTER TABLE files
   ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE;
 
-ALTER TABLE embeddings
+ALTER TABLE IF EXISTS embeddings
   ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE;
 
 ALTER TABLE memories
@@ -214,11 +214,17 @@ FROM users u
 WHERE f.user_id = u.id
   AND f.workspace_id IS NULL;
 
-UPDATE embeddings e
-SET workspace_id = f.workspace_id
-FROM files f
-WHERE e.file_id = f.id
-  AND e.workspace_id IS NULL;
+DO $$
+BEGIN
+  IF to_regclass('public.embeddings') IS NOT NULL THEN
+    UPDATE embeddings e
+    SET workspace_id = f.workspace_id
+    FROM files f
+    WHERE e.file_id = f.id
+      AND e.workspace_id IS NULL;
+  END IF;
+END
+$$;
 
 UPDATE memories m
 SET workspace_id = u.current_workspace_id
@@ -253,7 +259,7 @@ ALTER TABLE messages
 ALTER TABLE files
   ALTER COLUMN workspace_id SET NOT NULL;
 
-ALTER TABLE embeddings
+ALTER TABLE IF EXISTS embeddings
   ALTER COLUMN workspace_id SET NOT NULL;
 
 ALTER TABLE memories
@@ -297,8 +303,13 @@ CREATE INDEX IF NOT EXISTS messages_workspace_id_idx
 CREATE INDEX IF NOT EXISTS files_workspace_id_idx
   ON files (workspace_id);
 
-CREATE INDEX IF NOT EXISTS embeddings_workspace_id_idx
-  ON embeddings (workspace_id);
+DO $$
+BEGIN
+  IF to_regclass('public.embeddings') IS NOT NULL THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS embeddings_workspace_id_idx ON embeddings (workspace_id)';
+  END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS memories_workspace_id_idx
   ON memories (workspace_id, user_id, updated_at DESC);

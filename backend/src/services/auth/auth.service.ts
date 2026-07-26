@@ -1,10 +1,10 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { RedisClientType } from "redis";
 import { randomUUID } from "crypto";
 
 import { CanonicalUserRole } from "../../authorization/authorization.types";
 import { env } from "../../config/env";
+import { KeyValueStore } from "../../database/key-value-store";
 import {
   getPermissionsForRole,
   normalizeUserRole
@@ -41,7 +41,7 @@ export interface AuthenticatedSession extends WorkspaceSession {
 export class AuthService {
   constructor(
     private readonly users: UserRepository,
-    private readonly redis: RedisClientType,
+    private readonly redis: KeyValueStore,
     private readonly workspaces: WorkspaceService
   ) {}
 

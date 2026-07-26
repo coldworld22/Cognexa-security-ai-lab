@@ -1,4 +1,5 @@
 import { config } from "dotenv";
+import { isIP } from "net";
 import { z } from "zod";
 
 config();
@@ -27,17 +28,79 @@ const optionalEnvValue = <T extends z.ZodTypeAny>(schema: T) =>
     return value;
   }, schema.optional());
 
+const normalizeIpLiteral = (value: string): string => {
+  const trimmed = value.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const withoutZone =
+    trimmed.includes("%") ? trimmed.slice(0, trimmed.indexOf("%")) : trimmed;
+  const mappedIpv4 = withoutZone.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+
+  if (mappedIpv4?.[1] && isIP(mappedIpv4[1]) === 4) {
+    return mappedIpv4[1];
+  }
+
+  return withoutZone;
+};
+
+const ipListEnvValue = z.preprocess((value) => {
+  if (typeof value !== "string" || value.trim() === "") {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}, z.array(z.string().min(1)).superRefine((value, context) => {
+  for (const entry of value) {
+    if (isIP(normalizeIpLiteral(entry)) === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid IP address in ADMIN_IP_ALLOWLIST: ${entry}`
+      });
+    }
+  }
+}).transform((value) =>
+  Array.from(new Set(value.map((entry) => normalizeIpLiteral(entry))))
+));
+
+const trustProxyEnvValue = z.preprocess((value) => {
+  if (typeof value !== "string" || value.trim() === "") {
+    return false;
+  }
+
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "true") {
+    return true;
+  }
+
+  if (trimmed === "false") {
+    return false;
+  }
+
+  if (/^\d+$/u.test(trimmed)) {
+    return Number.parseInt(trimmed, 10);
+  }
+
+  return value.trim();
+}, z.union([z.boolean(), z.number().int().nonnegative(), z.string().min(1)]));
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(5000),
+  HTTP_REDIRECT_PORT: optionalEnvValue(z.coerce.number().int().positive()),
   API_PREFIX: z.string().default("/api/v1"),
   HTTPS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  FORCE_HTTPS: z
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
   HTTPS_KEY_FILE: optionalEnvValue(z.string().min(1)),
   HTTPS_CERT_FILE: optionalEnvValue(z.string().min(1)),
   HTTPS_CA_FILE: optionalEnvValue(z.string().min(1)),
+  TRUST_PROXY: trustProxyEnvValue.default(false),
   POSTGRES_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
   JWT_SECRET: z.string().min(12),
@@ -53,6 +116,7 @@ const envSchema = z.object({
   ADMIN_LOGIN: z.string().min(1).default("admin"),
   ADMIN_PASSWORD: z.string().min(8),
   ADMIN_DISPLAY_NAME: z.string().min(1).default("Administrator"),
+  ADMIN_IP_ALLOWLIST: ipListEnvValue.default([]),
   ACCESS_TOKEN_TTL: z.string().default("15m"),
   REFRESH_TOKEN_TTL: z.string().default("7d"),
   AUTHZ_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),

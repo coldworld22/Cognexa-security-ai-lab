@@ -1,5 +1,4 @@
 import { Logger } from "pino";
-import { RedisClientType } from "redis";
 
 import {
   AccessContext,
@@ -8,6 +7,7 @@ import {
   Permission
 } from "../../authorization/authorization.types";
 import { getPermissionsForRole } from "../../authorization/role-permission-matrix";
+import { KeyValueStore } from "../../database/key-value-store";
 import { UserRepository } from "../../database/repositories/user.repository";
 import { AuthorizationAuditLogRepository } from "../../database/repositories/authorization-audit-log.repository";
 import { AppError } from "../../utils/app-error";
@@ -21,7 +21,7 @@ export class AuthorizationService {
   constructor(
     private readonly users: UserRepository,
     private readonly auditLogs: AuthorizationAuditLogRepository,
-    private readonly redis: RedisClientType,
+    private readonly redis: KeyValueStore,
     private readonly logger: Logger,
     private readonly workspaces: WorkspaceService,
     private readonly options: AuthorizationServiceOptions

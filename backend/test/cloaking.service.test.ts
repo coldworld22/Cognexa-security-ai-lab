@@ -78,6 +78,7 @@ function buildCurlJson(url: string, body: Record<string, unknown>): string {
 function createService(options: {
   config: ReturnType<typeof createConfig>;
   directFetch: typeof fetch;
+  proxyManager?: unknown;
 }) {
   const session = createSession({
     strategy: options.config.outboundStrategy
@@ -110,7 +111,8 @@ function createService(options: {
       debug: () => undefined
     } as never,
     {
-      directFetch: options.directFetch
+      directFetch: options.directFetch,
+      proxyManager: options.proxyManager as never
     }
   );
 
@@ -162,6 +164,20 @@ test("CloakingService exposes detailed direct and exit identities for vpn-chain"
     leakTest.advisories.includes("vpn_chain_external_tunnel_required")
   );
   assert.ok(exitLogCalls.length >= 1);
+});
+
+test("CloakingService reports the supported Private Mode capabilities", () => {
+  const { service } = createService({
+    config: createConfig(),
+    directFetch: (async () => jsonResponse({ ip: "203.0.113.10" })) as typeof fetch
+  });
+
+  assert.deepEqual(service.getCapabilities(), {
+    torBackedStrategies: ["tor", "hybrid", "rotating-proxy"],
+    externalTunnelRequiredStrategies: ["vpn-chain"],
+    tlsHandshakeSpoofing: false,
+    requestIdentityProfilesAdjustHeadersOnly: true
+  });
 });
 
 test("CloakingService flags hybrid mode when only direct categories are enabled", async () => {
@@ -338,4 +354,348 @@ test("CloakingService falls back to ipify when ipapi returns a challenge page", 
   assert.equal(verification.exitIdentity?.ip, "2a0b:f4c0:16c:15::1");
   assert.equal(verification.exitIdentity?.isTorExit, true);
   assert.deepEqual(verification.leaks, []);
+});
+
+test("CloakingService clears stale proxy leak flags when Tor fallback verification succeeds", async () => {
+  const config = createConfig({
+    outboundStrategy: "tor"
+  });
+
+  const { service } = createService({
+    config,
+    directFetch: (async () => {
+      throw new Error("direct identity unavailable");
+    }) as typeof fetch,
+    proxyManager: {
+      isEnabledForWorkspace: () => true,
+      verifyNoLeaks: async () => ({
+        testedAt: "2026-07-06T12:30:00.000Z",
+        strategy: "tor",
+        directIp: null,
+        exitIp: null,
+        exitRegion: null,
+        dnsTransport: "system",
+        isTorExit: null,
+        leaks: ["exit_ip_unavailable", "tor_exit_unconfirmed"],
+        directIdentity: null,
+        exitIdentity: null,
+        verificationCategory: "external_url_access",
+        transportVerified: false,
+        advisories: ["webrtc_not_applicable_in_node_runtime"]
+      })
+    }
+  });
+
+  (
+    service as unknown as {
+      execCurl: (args: string[]) => Promise<string>;
+    }
+  ).execCurl = async (args: string[]) => {
+    const url = args.at(-1) ?? "";
+
+    if (url.includes("ipapi.co/json")) {
+      return buildCurlResponse(url, "<html>challenge</html>", "text/html");
+    }
+
+    if (url.includes("api64.ipify.org")) {
+      return buildCurlJson(url, {
+        ip: "51.15.59.15"
+      });
+    }
+
+    return buildCurlJson(url, {
+      IP: "51.15.59.15",
+      IsTor: true
+    });
+  };
+
+  const verification = await service.verifyCloaking("workspace-1");
+
+  assert.equal(verification.exitIp, "51.15.59.15");
+  assert.equal(verification.exitIdentity?.ip, "51.15.59.15");
+  assert.equal(verification.exitIdentity?.isTorExit, true);
+  assert.equal(verification.transportVerified, true);
+  assert.equal(verification.isCloaked, true);
+  assert.deepEqual(verification.leaks, []);
+});
+
+test("CloakingService deactivates a workspace back to direct mode even without an active session", async () => {
+  const configWrites: Array<Record<string, unknown>> = [];
+  const disableCalls: Array<string | undefined> = [];
+  let fullProtectionDisabled = 0;
+
+  const service = new CloakingService(
+    {
+      findByWorkspaceId: async () => createConfig(),
+      upsert: async (input: Record<string, unknown>) => {
+        configWrites.push(input);
+        return input;
+      }
+    } as never,
+    {
+      findActiveByWorkspaceId: async () => null,
+      listActive: async () => []
+    } as never,
+    {} as never,
+    {
+      warn: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    } as never,
+    {
+      proxyManager: {
+        disableSystemProxy: async (workspaceId?: string) => {
+          disableCalls.push(workspaceId);
+        }
+      } as never,
+      fullProtectionToggle: {
+        deactivateFullProtection: async () => {
+          fullProtectionDisabled += 1;
+        }
+      } as never
+    }
+  );
+
+  await service.deactivateWorkspace("workspace-1");
+
+  assert.equal(configWrites.length, 1);
+  assert.equal(configWrites[0]?.mode, "direct");
+  assert.deepEqual(disableCalls, [undefined]);
+  assert.equal(fullProtectionDisabled, 1);
+});
+
+test("CloakingService clears stale startup sessions when proxy restore fails", async () => {
+  const session = createSession();
+  const endedSessions: string[] = [];
+  const configWrites: Array<Record<string, unknown>> = [];
+  const disableCalls: Array<string | undefined> = [];
+  let fullProtectionDisabled = 0;
+
+  const service = new CloakingService(
+    {
+      findByWorkspaceId: async () => createConfig(),
+      upsert: async (input: Record<string, unknown>) => {
+        configWrites.push(input);
+        return input;
+      }
+    } as never,
+    {
+      listActive: async () => [session],
+      endSession: async (sessionId: string) => {
+        endedSessions.push(sessionId);
+        return session;
+      }
+    } as never,
+    {} as never,
+    {
+      warn: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    } as never,
+    {
+      proxyManager: {
+        enableSystemProxy: async () => {
+          throw new Error("Access is denied.");
+        },
+        disableSystemProxy: async (workspaceId?: string) => {
+          disableCalls.push(workspaceId);
+        }
+      } as never,
+      fullProtectionToggle: {
+        deactivateFullProtection: async () => {
+          fullProtectionDisabled += 1;
+        }
+      } as never
+    }
+  );
+
+  await service.initialize();
+
+  assert.deepEqual(endedSessions, ["session-1"]);
+  assert.deepEqual(
+    configWrites.map((write) => [write.workspaceId, write.mode]),
+    [["workspace-1", "direct"]]
+  );
+  assert.deepEqual(disableCalls, [undefined]);
+  assert.equal(fullProtectionDisabled, 1);
+});
+
+test("CloakingService shutdown restores normal networking without ending active sessions", async () => {
+  const sessionOne = createSession();
+  const sessionTwo = createSession({
+    id: "session-2",
+    workspaceId: "workspace-2",
+    startedAt: "2026-06-25T09:15:00.000Z",
+    createdAt: "2026-06-25T09:15:00.000Z",
+    updatedAt: "2026-06-25T09:15:00.000Z"
+  });
+  const endedSessions: string[] = [];
+  const configWrites: Array<Record<string, unknown>> = [];
+  const disableCalls: Array<string | undefined> = [];
+  let fullProtectionDisabled = 0;
+
+  const service = new CloakingService(
+    {
+      findByWorkspaceId: async (workspaceId: string) =>
+        createConfig({
+          id: workspaceId,
+          workspaceId
+        }),
+      upsert: async (input: Record<string, unknown>) => {
+        configWrites.push(input);
+        return input;
+      }
+    } as never,
+    {
+      listActive: async () => [sessionOne, sessionTwo],
+      endSession: async (sessionId: string) => {
+        endedSessions.push(sessionId);
+        return sessionId === sessionTwo.id ? sessionTwo : sessionOne;
+      }
+    } as never,
+    {} as never,
+    {
+      warn: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    } as never,
+    {
+      proxyManager: {
+        disableSystemProxy: async (workspaceId?: string) => {
+          disableCalls.push(workspaceId);
+        }
+      } as never,
+      fullProtectionToggle: {
+        deactivateFullProtection: async () => {
+          fullProtectionDisabled += 1;
+        }
+      } as never
+    }
+  );
+
+  await service.shutdown();
+
+  assert.deepEqual(endedSessions, []);
+  assert.deepEqual(configWrites, []);
+  assert.deepEqual(disableCalls, [undefined]);
+  assert.equal(fullProtectionDisabled, 1);
+});
+
+test("CloakingService re-applies process-wide protection when watchdog detects drift", async () => {
+  const fullProtectionActivations: Array<Record<string, unknown>> = [];
+  const proxyEnableCalls: string[] = [];
+
+  const service = new CloakingService(
+    {
+      findByWorkspaceId: async () => createConfig()
+    } as never,
+    {
+      listActive: async () => [createSession()]
+    } as never,
+    {} as never,
+    {
+      warn: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    } as never,
+    {
+      proxyManager: {
+        isEnabledForWorkspace: () => false,
+        enableSystemProxy: async (workspaceId: string) => {
+          proxyEnableCalls.push(workspaceId);
+        }
+      } as never,
+      fullProtectionToggle: {
+        verifyFullProtection: async () => ({
+          passed: false,
+          verifiedAt: "2026-07-07T09:00:00.000Z",
+          leaks: ["system_proxy_inactive"],
+          advisories: [],
+          results: {} as never
+        }),
+        activateFullProtection: async (input: Record<string, unknown>) => {
+          fullProtectionActivations.push(input);
+          return {
+            passed: true,
+            verifiedAt: "2026-07-07T09:00:01.000Z",
+            leaks: [],
+            advisories: [],
+            results: {} as never
+          };
+        }
+      } as never
+    }
+  );
+
+  await (
+    service as unknown as {
+      maintainActiveProtection: () => Promise<void>;
+    }
+  ).maintainActiveProtection();
+
+  assert.deepEqual(proxyEnableCalls, ["workspace-1"]);
+  assert.equal(fullProtectionActivations.length, 1);
+  assert.equal(fullProtectionActivations[0]?.workspaceId, "workspace-1");
+});
+
+test("CloakingService resyncs process-wide protection when an active config changes", async () => {
+  const configWrites: Array<Record<string, unknown>> = [];
+  const proxyEnableCalls: string[] = [];
+  const fullProtectionActivations: Array<Record<string, unknown>> = [];
+  const session = createSession();
+
+  const service = new CloakingService(
+    {
+      findByWorkspaceId: async () => createConfig(),
+      upsert: async (input: Record<string, unknown>) => {
+        configWrites.push(input);
+        return input;
+      }
+    } as never,
+    {
+      findActiveByWorkspaceId: async () => session
+    } as never,
+    {} as never,
+    {
+      warn: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      debug: () => undefined
+    } as never,
+    {
+      proxyManager: {
+        enableSystemProxy: async (workspaceId: string) => {
+          proxyEnableCalls.push(workspaceId);
+        }
+      } as never,
+      fullProtectionToggle: {
+        activateFullProtection: async (input: Record<string, unknown>) => {
+          fullProtectionActivations.push(input);
+          return {
+            passed: true,
+            verifiedAt: "2026-07-07T09:10:00.000Z",
+            leaks: [],
+            advisories: [],
+            results: {} as never
+          };
+        }
+      } as never,
+      setIntervalImpl: (() => 0) as typeof setInterval,
+      clearIntervalImpl: (() => undefined) as typeof clearInterval
+    }
+  );
+
+  const nextConfig = await service.updateConfig("workspace-1", {
+    torSocksPort: 9150
+  });
+
+  assert.equal(nextConfig.torSocksPort, 9150);
+  assert.equal(configWrites.length, 1);
+  assert.deepEqual(proxyEnableCalls, ["workspace-1"]);
+  assert.equal(fullProtectionActivations.length, 1);
+  assert.equal(fullProtectionActivations[0]?.torSocksPort, 9150);
 });

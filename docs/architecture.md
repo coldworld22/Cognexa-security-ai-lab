@@ -92,6 +92,7 @@ More concretely:
 - The workspace bootstraps current workspace, conversations, tools, memory, providers, and tasks from the backend.
 - Admin pages call specific `/admin/*` endpoints and render specialized consoles for Private Mode, scanning, policy testing, and authorized testing runs.
 - The Private Mode console shows staged activation across profile save, session start, runtime sync, exit-path verification, and final security-tool readiness.
+- The Private Mode console also exposes the current capability boundary so operators can distinguish Tor-backed in-process routes from strategies that still require external tunnel plumbing.
 - Security admin screens load Private Mode session state first, disable action buttons when cloaking is inactive, and deep-link operators back to `/admin/private-mode`.
 
 ### Dependencies
@@ -551,6 +552,7 @@ Services are invoked through the API layer rather than exposing routes themselve
   - `tor` and `rotating-proxy` use the Tor-backed outbound path for cloaked categories.
   - `hybrid` uses Tor for sensitive categories such as `security_research` and `vulnerability_analysis`.
   - `vpn-chain` is persisted in config and session state, but any non-Tor transport still depends on external VPN plumbing rather than an in-process tunnel orchestrator.
+  - Request identity profiles adjust HTTP request headers only; the service does not spoof the TLS handshake or JA3 fingerprint.
 
 #### WebsiteScannerService
 

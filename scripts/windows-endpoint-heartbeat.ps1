@@ -11,6 +11,7 @@ param(
 )
 
 $computerSystem = Get-CimInstance Win32_ComputerSystem
+$systemEnclosure = Get-CimInstance Win32_SystemEnclosure | Select-Object -First 1
 $operatingSystem = Get-CimInstance Win32_OperatingSystem
 $processor = Get-CimInstance Win32_Processor | Select-Object -First 1
 $logicalDisk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" | Select-Object -First 1
@@ -48,6 +49,20 @@ if (-not $activeAdapter) {
 }
 
 $adapter = Get-NetAdapter | Where-Object { $_.ifIndex -eq $activeAdapter.InterfaceIndex } | Select-Object -First 1
+$chassisTypes = @($systemEnclosure.ChassisTypes)
+$laptopChassisTypes = @(8, 9, 10, 11, 12, 14, 18, 21, 30, 31, 32)
+$desktopChassisTypes = @(3, 4, 5, 6, 7, 13, 15, 16, 24, 35, 36)
+$serverChassisTypes = @(17, 23, 28, 29)
+$formFactor =
+  if (@($chassisTypes | Where-Object { $laptopChassisTypes -contains $_ }).Count -gt 0) {
+    "laptop"
+  } elseif (@($chassisTypes | Where-Object { $serverChassisTypes -contains $_ }).Count -gt 0) {
+    "server"
+  } elseif (@($chassisTypes | Where-Object { $desktopChassisTypes -contains $_ }).Count -gt 0) {
+    "desktop"
+  } else {
+    "unknown"
+  }
 $totalMemoryBytes = [double]$computerSystem.TotalPhysicalMemory
 $freeMemoryKb = [double]$operatingSystem.FreePhysicalMemory
 $usedMemoryPercent =
@@ -92,6 +107,10 @@ $payload = @{
     interfaceIndex = $activeAdapter.InterfaceIndex
     adapterDescription = if ($adapter) { $adapter.InterfaceDescription } else { $null }
     processor = if ($processor) { $processor.Name } else { $null }
+    manufacturer = $computerSystem.Manufacturer
+    model = $computerSystem.Model
+    chassisTypes = $chassisTypes
+    formFactor = $formFactor
   }
 }
 

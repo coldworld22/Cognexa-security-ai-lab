@@ -59,6 +59,13 @@ export interface CloakingSession {
   updatedAt?: string;
 }
 
+export interface PrivateModeCapabilities {
+  torBackedStrategies: PrivateModeOutboundStrategy[];
+  externalTunnelRequiredStrategies: PrivateModeOutboundStrategy[];
+  tlsHandshakeSpoofing: boolean;
+  requestIdentityProfilesAdjustHeadersOnly: boolean;
+}
+
 export interface ExitLog {
   id: string;
   sessionId: string;

@@ -17,17 +17,31 @@ async function bootstrap(): Promise<void> {
     noServer: true
   });
   const server = createHttpListener(app, context.logger);
+  const redirectServer = createHttpRedirectListener(context.logger);
 
   server.listen(env.PORT, () => {
     context.logger.info(
       {
         port: env.PORT,
         environment: env.NODE_ENV,
-        protocol: env.HTTPS_ENABLED ? "https" : "http"
+        protocol: env.HTTPS_ENABLED ? "https" : "http",
+        redirectPort: redirectServer ? env.HTTP_REDIRECT_PORT : null
       },
       "Security AI Lab backend started"
     );
   });
+
+  if (redirectServer && env.HTTP_REDIRECT_PORT) {
+    redirectServer.listen(env.HTTP_REDIRECT_PORT, () => {
+      context.logger.info(
+        {
+          port: env.HTTP_REDIRECT_PORT,
+          targetPort: env.PORT
+        },
+        "HTTP redirect listener started for the backend"
+      );
+    });
+  }
 
   server.on("upgrade", (request, socket, head) => {
     void handleWebSocketUpgrade(request, socket, head);
@@ -43,7 +57,11 @@ async function bootstrap(): Promise<void> {
 
     try {
       await closeWebSocketServer(wss);
+      if (redirectServer) {
+        await closeServer(redirectServer);
+      }
       await closeServer(server);
+      await context.services.privateMode.shutdown();
       if (context.redis.isOpen) {
         await context.redis.quit();
       }
@@ -150,7 +168,7 @@ async function bootstrap(): Promise<void> {
     });
   });
 
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"] as const) {
     process.on(signal, () => {
       void shutdown(signal);
     });
@@ -233,6 +251,45 @@ function createHttpListener(
     },
     app
   );
+}
+
+function createHttpRedirectListener(
+  logger: Awaited<ReturnType<typeof createAppContext>>["logger"]
+): HttpServer | null {
+  if (!env.HTTPS_ENABLED || !env.HTTP_REDIRECT_PORT) {
+    return null;
+  }
+
+  if (env.HTTP_REDIRECT_PORT === env.PORT) {
+    logger.warn(
+      {
+        port: env.PORT,
+        redirectPort: env.HTTP_REDIRECT_PORT
+      },
+      "Skipping backend HTTP redirect listener because the redirect port matches the HTTPS listener port"
+    );
+    return null;
+  }
+
+  return createHttpServer((request, response) => {
+    const location = buildHttpsRedirectLocation(request, env.PORT);
+    response.statusCode = 308;
+    response.setHeader("Location", location);
+    response.end();
+  });
+}
+
+function buildHttpsRedirectLocation(
+  request: IncomingMessage,
+  httpsPort: number
+): string {
+  const hostHeader = request.headers.host?.trim() || "localhost";
+  const targetUrl = new URL(request.url ?? "/", `http://${hostHeader}`);
+
+  targetUrl.protocol = "https:";
+  targetUrl.port = httpsPort === 443 ? "" : String(httpsPort);
+
+  return targetUrl.toString();
 }
 
 function requireTlsFile(value: string | undefined, envName: string): string {

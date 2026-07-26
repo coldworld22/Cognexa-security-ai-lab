@@ -40,6 +40,7 @@ export function AuthForm() {
   const [rememberMe, setRememberMe] = useState(true);
   const [showWorkspaceOptions, setShowWorkspaceOptions] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [supportMessage, setSupportMessage] = useState<string | null>(null);
@@ -55,7 +56,7 @@ export function AuthForm() {
         return;
       }
 
-      setIsSubmitting(true);
+      setIsRestoringSession(true);
       setError(null);
       setSupportMessage(null);
 
@@ -65,7 +66,7 @@ export function AuthForm() {
       }
 
       if (!restoredSession) {
-        setIsSubmitting(false);
+        setIsRestoringSession(false);
         return;
       }
 
@@ -248,6 +249,12 @@ export function AuthForm() {
       {supportMessage ? (
         <div className="rounded-[18px] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-300">
           {supportMessage}
+        </div>
+      ) : null}
+
+      {isRestoringSession ? (
+        <div className="rounded-[18px] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-slate-300">
+          {t("workspace.connectingDescription")}
         </div>
       ) : null}
 

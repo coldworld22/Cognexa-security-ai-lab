@@ -9,11 +9,40 @@ export interface ConversationSummary {
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 
+export interface ChatMessageSource {
+  embeddingId: string;
+  fileId: string;
+  fileName: string;
+  chunkIndex: number;
+  chunkReference: string;
+  score: number;
+}
+
+export interface ChatMessageMetadata {
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+  };
+  retrieval?: {
+    query?: string;
+    sources?: ChatMessageSource[];
+    maxChunks?: number;
+    similarityThreshold?: number;
+    maxContextTokens?: number;
+    usedContextTokens?: number;
+  };
+  searchProvider?: string;
+  searchQuery?: string;
+  [key: string]: unknown;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
   createdAt: string;
+  metadata?: ChatMessageMetadata;
+  updatedAt?: string;
 }
 
 export interface MemoryItem {
@@ -213,6 +242,19 @@ export interface AdminNetworkEndpoint {
   visibility: "network_only" | "agent";
   activityLevel: "basic_reachability" | "host_telemetry";
   agentInstalled: boolean;
+  deviceClassification: {
+    category: "computer" | "phone" | "tablet" | "printer" | "camera" | "network" | "iot" | "unknown";
+    formFactor: "desktop" | "laptop" | "workstation" | "server" | "unknown";
+    confidence: "high" | "medium" | "low";
+    source: "agent" | "network_inference";
+    evidence: string[];
+  };
+  connectivity: {
+    state: "online" | "offline" | "unverified";
+    source: "agent" | "reachability_probe" | "fortigate" | "stale_inventory";
+    checkedAt: string;
+    reason?: string;
+  };
   remoteAccess?: {
     provider: "guacamole" | "meshcentral" | "rustdesk" | "rdp" | "custom";
     mode: "embedded" | "external";
@@ -296,6 +338,13 @@ export interface PrivateModeSession {
   updatedAt?: string;
 }
 
+export interface PrivateModeCapabilities {
+  torBackedStrategies: PrivateModeOutboundStrategy[];
+  externalTunnelRequiredStrategies: PrivateModeOutboundStrategy[];
+  tlsHandshakeSpoofing: boolean;
+  requestIdentityProfilesAdjustHeadersOnly: boolean;
+}
+
 export interface PrivateModeCircuitStatus {
   sessionId: string;
   workspaceId: string;
@@ -345,11 +394,13 @@ export interface PrivateModeVerificationResult {
 }
 
 export interface PrivateModeSessionState {
+  capabilities: PrivateModeCapabilities;
   session: PrivateModeSession | null;
   circuit: PrivateModeCircuitStatus | null;
   verification: PrivateModeVerificationResult | null;
   routeVerified: boolean;
   verificationError: string | null;
+  transportSecure: boolean;
 }
 
 export interface PrivateModeLeakTestResult {
@@ -515,6 +566,60 @@ export interface AdminWebsiteScan {
   }>;
   pages: AdminWebsiteScannedPage[];
   findings: AdminWebsiteScanFinding[];
+}
+
+export type MobileScanSeverity = "critical" | "high" | "medium" | "low" | "info";
+export type MobilePermissionStatus = "dangerous" | "normal" | "signature" | "unknown";
+export type MobilePermissionRisk = "low" | "medium" | "high";
+
+export interface AdminMobileScanPermission {
+  name: string;
+  status: MobilePermissionStatus;
+  risk: MobilePermissionRisk;
+  description: string;
+  reason: string;
+}
+
+export interface AdminMobileScanVulnerability {
+  id: string;
+  title: string;
+  severity: MobileScanSeverity;
+  description: string;
+  file: string;
+  line: number;
+  remediation: string;
+}
+
+export interface AdminMobileScanSummary {
+  totalVulnerabilities: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+  totalPermissions: number;
+  riskyPermissions: number;
+  trackerCount: number;
+  riskLevel: "low" | "medium" | "high" | "critical";
+  headline: string;
+}
+
+export interface AdminMobileScan {
+  id: string;
+  workspaceId: string;
+  appName: string;
+  packageName: string;
+  version: string;
+  targetSdk: number;
+  minSdk: number;
+  fileSize: number;
+  securityScore: number;
+  permissions: AdminMobileScanPermission[];
+  vulnerabilities: AdminMobileScanVulnerability[];
+  trackers: string[];
+  summary: AdminMobileScanSummary;
+  recommendations: string[];
+  scanDate: string;
 }
 
 export type SecurityReviewCheckCategory = WebsiteFindingCategory;

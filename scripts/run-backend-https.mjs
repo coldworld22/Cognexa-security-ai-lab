@@ -16,22 +16,24 @@ const tsxCliPath = require.resolve("tsx/cli", {
 
 ensureCertificates();
 
-const child = spawn(
-  process.execPath,
-  [tsxCliPath, "watch", "src/main.ts"],
-  {
-    cwd: backendRoot,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      HTTPS_ENABLED: "true",
-      HTTPS_CERT_FILE: certFile,
-      HTTPS_KEY_FILE: keyFile,
-      NODE_EXTRA_CA_CERTS: caFile,
-      PORT: process.env.PORT ?? "5000"
-    }
+const child = spawn(process.execPath, [tsxCliPath, "watch", "src/main.ts"], {
+  cwd: backendRoot,
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    HTTPS_ENABLED: "true",
+    FORCE_HTTPS: "true",
+    HTTPS_CERT_FILE: certFile,
+    HTTPS_KEY_FILE: keyFile,
+    NODE_EXTRA_CA_CERTS: caFile,
+    PORT: process.env.PORT ?? "5000",
+    ...(process.env.HTTP_REDIRECT_PORT?.trim()
+      ? {
+          HTTP_REDIRECT_PORT: process.env.HTTP_REDIRECT_PORT.trim()
+        }
+      : {})
   }
-);
+});
 
 child.on("exit", (code, signal) => {
   if (signal) {

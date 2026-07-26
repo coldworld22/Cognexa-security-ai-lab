@@ -46,6 +46,21 @@ services:
       retries: 20
       start_period: 20s
 
+  meshcentral:
+    image: ghcr.io/ylianst/meshcentral:latest
+    container_name: security-ai-lab-meshcentral
+    restart: unless-stopped
+    environment:
+      DYNAMIC_CONFIG: "false"
+    ports:
+      - "127.0.0.1:${MESHCENTRAL_HTTP_PORT:-8081}:80"
+      - "127.0.0.1:${MESHCENTRAL_HTTPS_PORT:-8443}:443"
+    volumes:
+      - meshcentral-data:/opt/meshcentral/meshcentral-data
+      - meshcentral-files:/opt/meshcentral/meshcentral-files
+      - meshcentral-web:/opt/meshcentral/meshcentral-web
+      - meshcentral-backups:/opt/meshcentral/meshcentral-backups
+
   backend:
     build:
       context: .
@@ -125,3 +140,7 @@ volumes:
   postgres-data:
   redis-data:
   ollama-data:
+  meshcentral-data:
+  meshcentral-files:
+  meshcentral-web:
+  meshcentral-backups:

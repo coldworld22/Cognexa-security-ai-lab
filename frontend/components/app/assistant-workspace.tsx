@@ -31,6 +31,7 @@ import {
   AgentTaskDetail,
   AgentTaskSummary,
   ChatMessage,
+  ChatMessageSource,
   ConversationSummary,
   MemoryContext,
   LlmProviderCatalog,
@@ -66,7 +67,11 @@ function normalizeModelName(model?: string | null): string {
 const DEFAULT_AGENT_INSTRUCTIONS =
   `You are the ${APP_NAME} task operator. Prefer tool-assisted execution when it improves accuracy, keep outputs concise, and focus on actionable engineering results.`;
 
-function createOptimisticMessage(role: ChatMessage["role"], content: string): ChatMessage {
+function createOptimisticMessage(
+  role: ChatMessage["role"],
+  content: string,
+  metadata: ChatMessage["metadata"] = {}
+): ChatMessage {
   return {
     id:
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -74,7 +79,8 @@ function createOptimisticMessage(role: ChatMessage["role"], content: string): Ch
         : `${role}-${Date.now()}`,
     role,
     content,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    metadata
   };
 }
 
@@ -820,7 +826,11 @@ export function AssistantWorkspace({
     let conversationId = selectedConversationId;
     let createdConversationId: string | null = null;
     const userMessage = createOptimisticMessage("user", trimmed);
-    const assistantMessage = createOptimisticMessage("assistant", "");
+    const assistantMessage = createOptimisticMessage("assistant", "", {
+      retrieval: {
+        sources: []
+      }
+    });
 
     try {
       if (!conversationId) {
@@ -837,6 +847,24 @@ export function AssistantWorkspace({
         content: trimmed,
         provider: selectedProvider,
         model: selectedModel,
+        onSources: (sources: ChatMessageSource[]) => {
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantMessage.id
+                ? {
+                    ...message,
+                    metadata: {
+                      ...message.metadata,
+                      retrieval: {
+                        ...message.metadata?.retrieval,
+                        sources
+                      }
+                    }
+                  }
+                : message
+            )
+          );
+        },
         onToken: (delta) => {
           assistantContent += delta;
           setMessages((current) =>
@@ -852,10 +880,15 @@ export function AssistantWorkspace({
         }
       });
 
-      await Promise.allSettled([
+      const [messagesResult] = await Promise.allSettled([
+        listMessages(conversationId),
         refreshConversationsState(conversationId),
         refreshMemoryState()
       ]);
+
+      if (messagesResult.status === "fulfilled") {
+        setMessages(messagesResult.value);
+      }
 
       if (createdConversationId) {
         startTransition(() => {

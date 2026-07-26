@@ -24,6 +24,8 @@ interface UploadDocumentInput {
 }
 
 export class RagService {
+  private readonly enabled: boolean;
+
   constructor(
     private readonly files: FileRepository,
     private readonly embeddings: EmbeddingRepository,
@@ -32,10 +34,16 @@ export class RagService {
     private readonly chunker: TextChunker,
     private readonly authorization: AuthorizationService,
     private readonly retrievalContext: RetrievalContextService,
-    private readonly policy: PolicyService
-  ) {}
+    private readonly policy: PolicyService,
+    options: {
+      enabled?: boolean;
+    } = {}
+  ) {
+    this.enabled = options.enabled !== false;
+  }
 
   async ingestDocument(input: UploadDocumentInput & { actor: AccessContext }) {
+    this.assertRagEnabled();
     await this.authorization.assertPermission(input.actor, "rag", {
       layer: "service",
       resource: "rag.documents",
@@ -107,6 +115,7 @@ export class RagService {
   }
 
   async retrieve(actor: AccessContext, query: string, limit = 5) {
+    this.assertRagEnabled();
     await this.authorization.assertPermission(actor, "rag", {
       layer: "service",
       resource: "rag.retrieve",
@@ -132,5 +141,16 @@ export class RagService {
 
   private sanitizeFileName(fileName: string): string {
     return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  }
+
+  private assertRagEnabled(): void {
+    if (this.enabled) {
+      return;
+    }
+
+    throw new AppError(
+      "RAG is disabled because pgvector is not available in the current PostgreSQL instance",
+      503
+    );
   }
 }

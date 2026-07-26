@@ -76,6 +76,12 @@ certs/
 # Local seeded runtime artifacts
 uploads/seed/
 
+# Local runtime state and uploaded documents (retain directory markers only)
+/storage/*
+!/storage/.gitkeep
+/uploads/*
+!/uploads/.gitkeep
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

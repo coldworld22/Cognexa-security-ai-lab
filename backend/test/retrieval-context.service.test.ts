@@ -105,3 +105,43 @@ test("RetrievalContextService truncates context to the configured token budget",
   assert.ok((context.contextMessage ?? "").includes("..."));
   assert.ok(context.metadata.usedContextTokens >= 1);
 });
+
+test("RetrievalContextService returns no matches when retrieval is disabled", async () => {
+  let embedCalls = 0;
+  let searchCalls = 0;
+
+  const service = new RetrievalContextService(
+    {
+      embedQuery: async () => {
+        embedCalls += 1;
+        return {
+          vector: [0.1, 0.2, 0.3],
+          dimensions: 3,
+          model: "test-embed",
+          provider: "local"
+        };
+      }
+    } as never,
+    {
+      search: async () => {
+        searchCalls += 1;
+        return [];
+      }
+    } as never,
+    {
+      enabled: false,
+      maxChunks: 5,
+      similarityThreshold: 0.2,
+      maxContextTokens: 30
+    }
+  );
+
+  const context = await service.buildPromptContext({
+    workspaceId: "workspace-123",
+    query: "Summarize the notes"
+  });
+
+  assert.equal(embedCalls, 0);
+  assert.equal(searchCalls, 0);
+  assert.deepEqual(context.metadata.sources, []);
+});

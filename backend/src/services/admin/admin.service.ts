@@ -24,6 +24,12 @@ import {
   WebsiteScannerService
 } from "../website-scanner/website-scanner.service";
 import {
+  MobileAppFileType,
+  MobileScanExportFormat,
+  MobileScanExportResult,
+  ScanResult as MobileScanResult
+} from "../mobile/mobile-scan.types";
+import {
   AuthorizedSecurityTestAuthEndpointDescriptorInput,
   AuthorizedSecurityManualFormValidationInput,
   AuthorizedTestingDevModeStatus,
@@ -42,13 +48,16 @@ import {
   CloakingSession,
   CloakingVerificationResult,
   ExitLog,
-  LeakTestResult
+  LeakTestResult,
+  PrivateModeCapabilities
 } from "../private-mode/private-mode.types";
 import {
   PenetrationTestOrchestrator,
   PenetrationTestOrchestratorFactory
 } from "../penetration-testing/penetration-test-orchestrator.service";
 import { TaskEntity } from "../../database/entities/task.entity";
+import { env } from "../../config/env";
+import { MobileScanService } from "../mobile/mobile-scan.service";
 
 interface PersistedPenetrationTestAuditEntry {
   id: string;
@@ -121,11 +130,13 @@ export interface ManagedUser {
 }
 
 export interface PrivateModeSessionState {
+  capabilities: PrivateModeCapabilities;
   session: CloakingSession | null;
   circuit: CircuitStatus | null;
   verification: CloakingVerificationResult | null;
   routeVerified: boolean;
   verificationError: string | null;
+  transportSecure: boolean;
 }
 
 export class AdminService {
@@ -142,6 +153,7 @@ export class AdminService {
     private readonly endpoints: EndpointMonitorService,
     private readonly websiteScanner: WebsiteScannerService,
     private readonly securityReview: SecurityReviewService,
+    private readonly mobileScanning: MobileScanService,
     private readonly authorizedTesting: AuthorizedSecurityTestingService,
     private readonly privateMode: CloakingService,
     private readonly penetrationTesting: PenetrationTestOrchestratorFactory
@@ -322,6 +334,87 @@ export class AdminService {
       "run_security_review"
     );
     return this.securityReview.runReview(actor, input);
+  }
+
+  async scanMobileApp(
+    actor: AccessContext,
+    input: {
+      filePath: string;
+      fileName: string;
+      fileType: MobileAppFileType;
+    }
+  ): Promise<MobileScanResult> {
+    await this.assertPrivateModeActiveForSecurityWork(
+      actor,
+      "admin.mobile-scans",
+      "scan_mobile_app"
+    );
+    await this.policy.evaluatePolicy({
+      actor,
+      action: "admin.mobile_scan.execute",
+      categories: ["file_uploads", "vulnerability_analysis"],
+      fileName: input.fileName,
+      metadata: {
+        fileType: input.fileType
+      }
+    });
+
+    return this.mobileScanning.scanApp({
+      workspaceId: actor.workspaceId,
+      filePath: input.filePath,
+      fileName: input.fileName,
+      fileType: input.fileType
+    });
+  }
+
+  async listMobileScans(
+    actor: AccessContext,
+    limit = 25
+  ): Promise<MobileScanResult[]> {
+    await this.assertAdminPermission(
+      actor,
+      "admin.mobile-scans",
+      "list_mobile_scans"
+    );
+
+    return this.mobileScanning.listScans(actor.workspaceId, limit);
+  }
+
+  async getMobileScan(
+    actor: AccessContext,
+    scanId: string
+  ): Promise<MobileScanResult> {
+    await this.assertAdminPermission(
+      actor,
+      `admin.mobile-scans.${scanId}`,
+      "get_mobile_scan"
+    );
+
+    return this.mobileScanning.getScan(actor.workspaceId, scanId);
+  }
+
+  async deleteMobileScan(actor: AccessContext, scanId: string): Promise<void> {
+    await this.assertAdminPermission(
+      actor,
+      `admin.mobile-scans.${scanId}`,
+      "delete_mobile_scan"
+    );
+
+    await this.mobileScanning.deleteScan(actor.workspaceId, scanId);
+  }
+
+  async exportMobileScan(
+    actor: AccessContext,
+    scanId: string,
+    format: MobileScanExportFormat
+  ): Promise<MobileScanExportResult> {
+    await this.assertAdminPermission(
+      actor,
+      `admin.mobile-scans.${scanId}.export`,
+      "export_mobile_scan"
+    );
+
+    return this.mobileScanning.exportScan(actor.workspaceId, scanId, format);
   }
 
   async startDomainVerification(
@@ -538,6 +631,7 @@ export class AdminService {
       : await this.privateMode.getActiveSession(actor.workspaceId);
 
     if (!activeSession) {
+      await this.privateMode.deactivateWorkspace(actor.workspaceId);
       return;
     }
 
@@ -560,14 +654,17 @@ export class AdminService {
       "view_private_mode_session"
     );
 
+    const capabilities = this.privateMode.getCapabilities();
     const session = await this.privateMode.getActiveSession(actor.workspaceId);
     if (!session) {
       return {
+        capabilities,
         session: null,
         circuit: null,
         verification: null,
         routeVerified: false,
-        verificationError: null
+        verificationError: null,
+        transportSecure: env.HTTPS_ENABLED
       };
     }
 
@@ -584,11 +681,17 @@ export class AdminService {
       });
 
     return {
+      capabilities,
       session,
       circuit,
       verification,
       routeVerified: this.isRouteVerified(verification),
-      verificationError
+      verificationError:
+        verificationError ??
+        (verification?.isCloaked && verification.transportVerified && !env.HTTPS_ENABLED
+          ? "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before using security modules."
+          : null),
+      transportSecure: env.HTTPS_ENABLED
     };
   }
 
@@ -827,6 +930,23 @@ export class AdminService {
       return;
     }
 
+    if (!env.HTTPS_ENABLED && verification.isCloaked && verification.transportVerified) {
+      throw new AppError(
+        "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before using website scanning or security testing modules.",
+        403,
+        {
+          requiredAction: "enable_https",
+          privateModePath: "/admin/private-mode",
+          workspaceId: actor.workspaceId,
+          routeVerified: false,
+          transportSecure: false,
+          exitIp: verification.exitIp,
+          verificationCategory: verification.verificationCategory,
+          transportVerified: verification.transportVerified
+        }
+      );
+    }
+
     throw new AppError(
       "Private Mode must be active and its exit path verified before using website scanning or security testing modules.",
       403,
@@ -848,7 +968,7 @@ export class AdminService {
     verification: CloakingVerificationResult | null
   ): boolean {
     return Boolean(
-      verification?.isCloaked && verification.transportVerified
+      env.HTTPS_ENABLED && verification?.isCloaked && verification.transportVerified
     );
   }
 }

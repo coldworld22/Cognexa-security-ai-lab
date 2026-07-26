@@ -1,8 +1,10 @@
 import { Request, Response } from "express";
+import { extname } from "path";
 
 import { CanonicalUserRole } from "../../authorization/authorization.types";
 import { AdminService } from "../../services/admin/admin.service";
 import type { AuthorizedSecurityTestModule } from "../../services/authorized-testing/authorized-security-testing.types";
+import { MobileScanExportFormat } from "../../services/mobile/mobile-scan.types";
 import { ToolExecutionService } from "../../services/tool-execution/tool-execution.service";
 
 export class AdminController {
@@ -63,6 +65,60 @@ export class AdminController {
       maxPages: request.body.maxPages as number | undefined
     });
     response.json(review);
+  };
+
+  scanMobileApp = async (request: Request, response: Response) => {
+    const file = request.file;
+    if (!file) {
+      response.status(400).json({ error: "No mobile application file uploaded." });
+      return;
+    }
+
+    const fileType = this.resolveMobileFileType(file.originalname);
+    const scan = await this.admin.scanMobileApp(request.auth!, {
+      filePath: file.path,
+      fileName: file.originalname,
+      fileType
+    });
+    response.status(201).json({ scan });
+  };
+
+  listMobileScans = async (request: Request, response: Response) => {
+    const { limit } = request.query as unknown as { limit?: number };
+    const scans = await this.admin.listMobileScans(request.auth!, limit);
+    response.json({ scans });
+  };
+
+  getMobileScan = async (request: Request, response: Response) => {
+    const scan = await this.admin.getMobileScan(
+      request.auth!,
+      request.params.scanId as string
+    );
+    response.json({ scan });
+  };
+
+  deleteMobileScan = async (request: Request, response: Response) => {
+    await this.admin.deleteMobileScan(
+      request.auth!,
+      request.params.scanId as string
+    );
+    response.status(204).send();
+  };
+
+  exportMobileScan = async (request: Request, response: Response) => {
+    const format = (request.query.format as MobileScanExportFormat | undefined) ?? "json";
+    const exported = await this.admin.exportMobileScan(
+      request.auth!,
+      request.params.scanId as string,
+      format
+    );
+
+    response.setHeader("Content-Type", exported.contentType);
+    response.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${exported.fileName}"`
+    );
+    response.status(200).send(exported.body);
   };
 
   startDomainVerification = async (request: Request, response: Response) => {
@@ -225,4 +281,21 @@ export class AdminController {
     const logs = await this.admin.listPrivateModeExitLogs(request.auth!, limit);
     response.json({ logs });
   };
+
+  private resolveMobileFileType(
+    fileName: string
+  ): "apk" | "ipa" | "aab" {
+    const extension = extname(fileName).toLowerCase();
+    if (extension === ".apk") {
+      return "apk";
+    }
+    if (extension === ".ipa") {
+      return "ipa";
+    }
+    if (extension === ".aab") {
+      return "aab";
+    }
+
+    throw new Error("Unsupported mobile application file type.");
+  }
 }

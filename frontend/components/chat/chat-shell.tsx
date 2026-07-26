@@ -1029,7 +1029,10 @@ export function ChatShell({
     selectedProvider && selectedModel
       ? `${selectedProvider} / ${compactModel}`
       : selectedProvider || selectedModel || t("chat.modelUnassigned");
+  const isChatView = activeView === "chat";
   const workspaceName = currentWorkspace?.name ?? t("common.workspace");
+  const conversationLabel =
+    conversationTitle.trim() || t("workspace.conversationTitleFallback");
   const workspaceStatus = pending ? t("common.status.responding") : t("common.status.ready");
 
   return (
@@ -1038,17 +1041,24 @@ export function ChatShell({
         <div className="mx-auto flex max-w-6xl flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-tertiary)]">
-              {t("workspace.workspaceLabel")}
+              {isChatView ? workspaceName : t("workspace.workspaceLabel")}
             </p>
             <h1 className="mt-2 truncate text-[1.8rem] font-semibold tracking-[-0.04em] text-[var(--text-primary)] sm:text-[2rem]">
-              {workspaceName}
+              {isChatView ? conversationLabel : workspaceName}
             </h1>
             <p className="mt-2 truncate text-sm text-[var(--text-secondary)]">
-              {currentWorkspace?.organizationName ?? t("chat.personalWorkspace")}
+              {isChatView
+                ? currentWorkspace?.organizationName ?? t("chat.personalWorkspace")
+                : currentWorkspace?.organizationName ?? t("chat.personalWorkspace")}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {isChatView ? (
+              <div className="inline-flex rounded-full border border-black/6 bg-white/80 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
+                {t("common.totalThreads", { count: conversationCount })}
+              </div>
+            ) : null}
             <div className="inline-flex rounded-full border border-black/6 bg-white/80 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--text-tertiary)]">
               {workspaceStatus}
             </div>
@@ -1079,13 +1089,13 @@ export function ChatShell({
         </div>
       ) : null}
 
-      {activeView === "chat" ? (
+      {isChatView ? (
         <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto]">
-          <div className="min-h-0 overflow-y-auto px-3 py-4 sm:px-5 lg:px-6">
-            <MessageList messages={messages} />
+          <div className="min-h-0 overflow-y-auto px-3 py-5 sm:px-5 lg:px-6">
+            <MessageList messages={messages} pending={pending} onPromptSelect={onSend} />
           </div>
-          <div className="sticky bottom-0 z-10 border-t border-black/5 bg-[rgba(255,255,255,0.92)] px-3 py-3 backdrop-blur sm:px-5 lg:px-6">
-            <div className="mx-auto max-w-6xl">
+          <div className="sticky bottom-0 z-10 border-t border-black/5 bg-[rgba(255,255,255,0.92)] px-3 py-4 backdrop-blur sm:px-5 lg:px-6">
+            <div className="mx-auto max-w-4xl">
               <MessageComposer
                 providers={providers}
                 selectedProvider={selectedProvider}

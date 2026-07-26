@@ -10,6 +10,7 @@ import {
   AdminNetworkEvent,
   AdminNetworkJob,
   AdminNetworkScan,
+  AdminMobileScan,
   PrivateModeCircuitStatus,
   PrivateModeConfig,
   PrivateModeExitLog,
@@ -34,6 +35,7 @@ import {
   PolicyMode,
   AuthenticatedUser,
   ChatMessage,
+  ChatMessageSource,
   ConversationSummary,
   LlmProviderCatalog,
   MemoryContext,
@@ -44,10 +46,11 @@ import {
 } from "./types";
 import { SessionPersistence } from "./auth-cookies";
 
-const API_URL = resolveApiUrl(process.env.NEXT_PUBLIC_API_URL);
+const CONFIGURED_API_URL = resolveApiUrl(process.env.NEXT_PUBLIC_API_URL);
+let activeApiUrl = CONFIGURED_API_URL;
 const SESSION_STORAGE_KEY = "security-ai-lab.session";
-const NETWORK_ERROR_MESSAGE =
-  "Unable to reach the server. Check that the backend is running and try again.";
+const REQUEST_TIMEOUT_MS = 10_000;
+const PRIVATE_MODE_SESSION_TIMEOUT_MS = 30_000;
 const APP_ROLES = new Set(["super_admin", "admin", "manager", "developer", "viewer"]);
 
 export interface SessionTokens {
@@ -61,6 +64,16 @@ export interface AppSession {
   currentWorkspace: WorkspaceSummary | null;
   workspaces: WorkspaceSummary[];
   pendingInvitations: WorkspaceInvitation[];
+}
+
+export interface AuthSessionState {
+  permissions: string[];
+  privateMode?: {
+    active?: boolean;
+    canActivate?: boolean;
+    activationPath?: string;
+    blockedPath?: string;
+  };
 }
 
 export interface ExecuteAgentPayload {
@@ -107,26 +120,6 @@ function resolveApiUrl(configuredUrl?: string): string {
     return resolveDefaultApiUrl();
   }
 
-  if (!isBrowser()) {
-    return trimmedConfiguredUrl.replace(/\/$/, "");
-  }
-
-  try {
-    const parsedUrl = new URL(trimmedConfiguredUrl);
-
-    if (
-      window.location.protocol === "http:" &&
-      parsedUrl.protocol === "https:" &&
-      isLocalhostHostname(window.location.hostname) &&
-      isLocalhostHostname(parsedUrl.hostname)
-    ) {
-      parsedUrl.protocol = "http:";
-      return parsedUrl.toString().replace(/\/$/, "");
-    }
-  } catch {
-    return trimmedConfiguredUrl.replace(/\/$/, "");
-  }
-
   return trimmedConfiguredUrl.replace(/\/$/, "");
 }
 
@@ -140,10 +133,69 @@ function isLocalhostHostname(hostname: string): boolean {
   );
 }
 
+function getAlternateLocalApiUrl(url: string): string | null {
+  try {
+    const parsedUrl = new URL(url);
+    if (!isLocalhostHostname(parsedUrl.hostname)) {
+      return null;
+    }
+
+    if (parsedUrl.protocol === "https:") {
+      parsedUrl.protocol = "http:";
+      return parsedUrl.toString().replace(/\/$/, "");
+    }
+
+    if (parsedUrl.protocol === "http:") {
+      parsedUrl.protocol = "https:";
+      return parsedUrl.toString().replace(/\/$/, "");
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getActiveApiUrl(): string {
+  return activeApiUrl;
+}
+
+function buildApiUrl(path: string, baseUrl = getActiveApiUrl()): string {
+  return `${baseUrl}${path}`;
+}
+
+function buildNetworkErrorMessage(targets: string[]): string {
+  const uniqueTargets = Array.from(
+    new Set(
+      targets
+        .map((target) => target.trim())
+        .filter(Boolean)
+    )
+  );
+  const targetSummary =
+    uniqueTargets.length === 0
+      ? "the configured API endpoint"
+      : uniqueTargets.length === 1
+        ? uniqueTargets[0]
+        : `${uniqueTargets[0]} or ${uniqueTargets[1]}`;
+
+  return `Unable to reach the server at ${targetSummary}. Start the local stack with "npm run dev" or ensure the backend is running and that the frontend and backend use the same local HTTP or HTTPS mode.`;
+}
+
 export interface WorkspaceSessionPayload {
   currentWorkspace: WorkspaceSummary;
   workspaces: WorkspaceSummary[];
   pendingInvitations: WorkspaceInvitation[];
+}
+
+function hasSameSessionTokens(
+  left: SessionTokens,
+  right: SessionTokens
+): boolean {
+  return (
+    left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken
+  );
 }
 
 function isBrowser(): boolean {
@@ -573,6 +625,35 @@ async function parseError(response: Response): Promise<string> {
   }
 }
 
+async function handlePrivateModeRedirect(response: Response): Promise<void> {
+  if (response.status !== 403 || !isBrowser()) {
+    return;
+  }
+
+  try {
+    const payload = (await response.clone().json()) as {
+      privateModeRequired?: unknown;
+      redirectPath?: unknown;
+      canActivatePrivateMode?: unknown;
+    };
+
+    if (payload.privateModeRequired !== true) {
+      return;
+    }
+
+    const redirectPath =
+      typeof payload.redirectPath === "string" && payload.redirectPath.trim()
+        ? payload.redirectPath
+        : payload.canActivatePrivateMode === true
+          ? "/admin/private-mode"
+          : "/private-mode-required";
+
+    window.location.assign(redirectPath);
+  } catch {
+    // Ignore invalid error payloads and fall back to normal error handling.
+  }
+}
+
 async function syncSessionCookies(
   tokens: SessionTokens,
   persistence: SessionPersistence
@@ -606,26 +687,85 @@ async function clearSessionCookies(): Promise<void> {
 
 async function performFetch(
   input: string,
-  init: RequestInit
+  init: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => {
+    controller.abort(new Error("Request timed out"));
+  }, timeoutMs);
+
+  const abortListener = () => {
+    controller.abort(init.signal?.reason);
+  };
+
+  if (init.signal) {
+    if (init.signal.aborted) {
+      globalThis.clearTimeout(timeout);
+      throw init.signal.reason instanceof Error
+        ? init.signal.reason
+        : new Error(buildNetworkErrorMessage([input]));
+    }
+
+    init.signal.addEventListener("abort", abortListener, {
+      once: true
+    });
+  }
+
   try {
-    return await fetch(input, init);
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    });
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(NETWORK_ERROR_MESSAGE);
+      throw new Error(buildNetworkErrorMessage([input]));
     }
 
     throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abortListener);
   }
 }
 
 export function getConfiguredApiUrl(): string {
-  return API_URL;
+  return getActiveApiUrl();
+}
+
+async function performApiFetch(
+  path: string,
+  init: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const primaryApiUrl = getActiveApiUrl();
+  const primaryRequestUrl = buildApiUrl(path, primaryApiUrl);
+
+  try {
+    return await performFetch(primaryRequestUrl, init, timeoutMs);
+  } catch (primaryError) {
+    const fallbackApiUrl = getAlternateLocalApiUrl(primaryApiUrl);
+    if (!fallbackApiUrl || fallbackApiUrl === primaryApiUrl) {
+      throw primaryError;
+    }
+
+    const fallbackRequestUrl = buildApiUrl(path, fallbackApiUrl);
+
+    try {
+      const response = await performFetch(fallbackRequestUrl, init, timeoutMs);
+      activeApiUrl = fallbackApiUrl;
+      return response;
+    } catch {
+      throw new Error(
+        buildNetworkErrorMessage([primaryRequestUrl, fallbackRequestUrl])
+      );
+    }
+  }
 }
 
 async function refreshSession(session: AppSession): Promise<AppSession | null> {
   const persistence = readStoredSession()?.persistence ?? "local";
-  const response = await performFetch(`${API_URL}/auth/refresh`, {
+  const response = await performApiFetch("/auth/refresh", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -662,8 +802,41 @@ async function requestJson<T>(
   path: string,
   init: RequestInit = {},
   authenticated = true,
-  includeWorkspaceHeader = true
+  includeWorkspaceHeader = true,
+  timeoutMs = REQUEST_TIMEOUT_MS
 ): Promise<T> {
+  const response = await requestResponse(
+    path,
+    init,
+    authenticated,
+    includeWorkspaceHeader,
+    timeoutMs
+  );
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    return undefined as T;
+  }
+
+  const body = await response.text();
+  if (!body) {
+    return undefined as T;
+  }
+
+  return JSON.parse(body) as T;
+}
+
+async function requestResponse(
+  path: string,
+  init: RequestInit = {},
+  authenticated = true,
+  includeWorkspaceHeader = true,
+  timeoutMs = REQUEST_TIMEOUT_MS
+): Promise<Response> {
   let session = authenticated ? getStoredSession() : null;
   const headers = new Headers(init.headers);
 
@@ -682,10 +855,10 @@ async function requestJson<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  let response = await performFetch(`${API_URL}${path}`, {
+  let response = await performApiFetch(path, {
     ...init,
     headers
-  });
+  }, timeoutMs);
 
   if (response.status === 401 && authenticated && session) {
     const refreshedSession = await refreshSession(session);
@@ -694,31 +867,33 @@ async function requestJson<T>(
     }
 
     headers.set("Authorization", `Bearer ${refreshedSession.tokens.accessToken}`);
-    response = await performFetch(`${API_URL}${path}`, {
+    response = await performApiFetch(path, {
       ...init,
       headers
-    });
+    }, timeoutMs);
   }
 
   if (!response.ok) {
+    await handlePrivateModeRedirect(response);
     throw new Error(await parseError(response));
   }
 
-  if (response.status === 204) {
-    return undefined as T;
-  }
+  return response;
+}
 
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/json")) {
-    return undefined as T;
-  }
-
-  const body = await response.text();
-  if (!body) {
-    return undefined as T;
-  }
-
-  return JSON.parse(body) as T;
+async function requestBlob(
+  path: string,
+  init: RequestInit = {},
+  authenticated = true,
+  includeWorkspaceHeader = true
+): Promise<Blob> {
+  const response = await requestResponse(
+    path,
+    init,
+    authenticated,
+    includeWorkspaceHeader
+  );
+  return response.blob();
 }
 
 export async function login(
@@ -795,9 +970,17 @@ export async function restoreStoredSession(): Promise<AppSession | null> {
       true,
       false
     );
-    const latestSession = getStoredSession() ?? stored.session;
+    const latestSession = getStoredSession();
+    if (
+      latestSession &&
+      !hasSameSessionTokens(latestSession.tokens, stored.session.tokens)
+    ) {
+      return latestSession;
+    }
+
+    const baseSession = latestSession ?? stored.session;
     const nextSession = mergeSessionWithWorkspacePayload(
-      latestSession,
+      baseSession,
       workspaceSession
     );
 
@@ -805,9 +988,21 @@ export async function restoreStoredSession(): Promise<AppSession | null> {
     await syncSessionCookies(nextSession.tokens, stored.persistence);
     return nextSession;
   } catch {
+    const latestSession = getStoredSession();
+    if (
+      latestSession &&
+      !hasSameSessionTokens(latestSession.tokens, stored.session.tokens)
+    ) {
+      return latestSession;
+    }
+
     clearStoredSession();
     return null;
   }
+}
+
+export async function getAuthSessionState(): Promise<AuthSessionState> {
+  return requestJson<AuthSessionState>("/auth/session", {}, true, false);
 }
 
 export async function updateUserPreferences(
@@ -1040,6 +1235,48 @@ export async function runSecurityReviewLab(payload: {
   });
 }
 
+export async function scanMobileApplication(file: File): Promise<AdminMobileScan> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await requestJson<{ scan: AdminMobileScan }>(
+    "/admin/mobile-scans",
+    {
+      method: "POST",
+      body: formData
+    }
+  );
+
+  return response.scan;
+}
+
+export async function listMobileScans(limit = 25): Promise<AdminMobileScan[]> {
+  const response = await requestJson<{ scans: AdminMobileScan[] }>(
+    `/admin/mobile-scans?limit=${limit}`
+  );
+  return response.scans;
+}
+
+export async function getMobileScan(scanId: string): Promise<AdminMobileScan> {
+  const response = await requestJson<{ scan: AdminMobileScan }>(
+    `/admin/mobile-scans/${scanId}`
+  );
+  return response.scan;
+}
+
+export async function deleteMobileScan(scanId: string): Promise<void> {
+  await requestJson<void>(`/admin/mobile-scans/${scanId}`, {
+    method: "DELETE"
+  });
+}
+
+export async function exportMobileScan(
+  scanId: string,
+  format: "json" | "pdf"
+): Promise<Blob> {
+  return requestBlob(`/admin/mobile-scans/${scanId}/export?format=${format}`);
+}
+
 export async function getPrivateModeConfig(): Promise<PrivateModeConfig> {
   const response = await requestJson<{ config: PrivateModeConfig }>(
     "/admin/private-mode/config"
@@ -1083,7 +1320,13 @@ export async function deactivatePrivateMode(sessionId?: string): Promise<void> {
 }
 
 export async function getPrivateModeSession(): Promise<PrivateModeSessionState> {
-  return requestJson<PrivateModeSessionState>("/admin/private-mode/session");
+  return requestJson<PrivateModeSessionState>(
+    "/admin/private-mode/session",
+    {},
+    true,
+    true,
+    PRIVATE_MODE_SESSION_TIMEOUT_MS
+  );
 }
 
 export async function verifyPrivateMode(): Promise<PrivateModeVerificationResult> {
@@ -1325,7 +1568,7 @@ export async function streamAdvancedPenetrationTest(
   }
 
   const makeRequest = async (accessToken: string) =>
-    performFetch(`${API_URL}/admin/authorized-testing/advanced-runs/stream`, {
+    performApiFetch("/admin/authorized-testing/advanced-runs/stream", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1423,7 +1666,7 @@ export function createAdminNetworkWebSocketUrl(): string {
     throw new Error("You must sign in before using the assistant.");
   }
 
-  const baseUrl = new URL(API_URL);
+  const baseUrl = new URL(getActiveApiUrl());
   baseUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:";
   baseUrl.pathname = `${baseUrl.pathname.replace(/\/$/, "")}/admin/network/ws`;
   baseUrl.searchParams.set("access_token", session.tokens.accessToken);
@@ -1559,6 +1802,7 @@ interface StreamConversationInput {
   provider: string;
   model: string;
   onToken: (delta: string) => void;
+  onSources?: (sources: ChatMessageSource[]) => void;
 }
 
 export async function streamConversation(input: StreamConversationInput): Promise<void> {
@@ -1568,7 +1812,7 @@ export async function streamConversation(input: StreamConversationInput): Promis
   }
 
   const makeRequest = async (accessToken: string) =>
-    performFetch(`${API_URL}/chat/conversations/${input.conversationId}/stream`, {
+    performApiFetch(`/chat/conversations/${input.conversationId}/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1631,11 +1875,15 @@ export async function streamConversation(input: StreamConversationInput): Promis
         continue;
       }
 
-      let payload: {
-        delta?: string;
-        done?: boolean;
-        error?: string;
-      };
+      let payload:
+        | {
+            delta?: string;
+            done?: boolean;
+            error?: string;
+          }
+        | {
+            sources?: ChatMessageSource[];
+          };
 
       try {
         payload = JSON.parse(data) as {
@@ -1648,6 +1896,16 @@ export async function streamConversation(input: StreamConversationInput): Promis
 
       if (eventName === "token" && payload.delta) {
         input.onToken(payload.delta);
+      }
+
+      if (eventName === "sources") {
+        const sourcePayload = payload as {
+          sources?: ChatMessageSource[];
+        };
+
+        if (Array.isArray(sourcePayload.sources)) {
+          input.onSources?.(sourcePayload.sources);
+        }
       }
 
       if (eventName === "error") {

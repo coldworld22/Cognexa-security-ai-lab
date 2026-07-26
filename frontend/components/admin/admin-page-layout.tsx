@@ -14,6 +14,7 @@ type AdminView =
   | "private-mode"
   | "authorized-testing"
   | "website-scanner"
+  | "mobile-scanner"
   | "policies"
   | "security-review";
 
@@ -61,6 +62,11 @@ export function AdminPageLayout({
       href: "/admin/website-scanner",
       label: t("websiteScanner.navLabel"),
       view: "website-scanner"
+    },
+    {
+      href: "/admin/mobile-scanner",
+      label: t("mobileScanner.navLabel"),
+      view: "mobile-scanner"
     },
     {
       href: "/admin/policies",

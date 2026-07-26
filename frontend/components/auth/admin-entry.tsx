@@ -8,6 +8,7 @@ import {
   LockKeyhole,
   Radar,
   Shield,
+  Smartphone,
   Wifi
 } from "lucide-react";
 
@@ -42,7 +43,7 @@ export function AdminEntry() {
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
             <Link
               href="/admin/network-monitor"
               className="rounded-[24px] border border-black/8 bg-[var(--surface-soft)] p-5 transition hover:border-black/14 hover:bg-white"
@@ -112,6 +113,25 @@ export function AdminEntry() {
               </h3>
               <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
                 {t("websiteScanner.launchDescription")}
+              </p>
+              <div className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+                {t("admin.openTool")}
+                <ArrowUpRight className="size-4" />
+              </div>
+            </Link>
+
+            <Link
+              href="/admin/mobile-scanner"
+              className="rounded-[24px] border border-black/8 bg-[var(--surface-soft)] p-5 transition hover:border-black/14 hover:bg-white"
+            >
+              <div className="inline-flex rounded-2xl bg-[rgba(5,150,105,0.12)] p-3 text-[#047857]">
+                <Smartphone className="size-5" />
+              </div>
+              <h3 className="mt-4 text-xl font-semibold text-[var(--text-primary)]">
+                {t("mobileScanner.navLabel")}
+              </h3>
+              <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                {t("mobileScanner.launchDescription")}
               </p>
               <div className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
                 {t("admin.openTool")}

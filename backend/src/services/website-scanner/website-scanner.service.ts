@@ -7,6 +7,7 @@ import { AuthorizationService } from "../authorization/authorization.service";
 import { PolicyService } from "../policy/policy.service";
 import { CloakingService } from "../private-mode/cloaking.service";
 import {
+  BrowserLaunchProxySettings,
   BrowserCrawlResult,
   BrowserCrawler,
   BrowserObservedCookie
@@ -312,7 +313,8 @@ export class WebsiteScannerService {
       maxPages,
       {
         ignoreHttpsErrors: Boolean(rootTlsCertificateValidationError)
-      }
+      },
+      actor.workspaceId
     );
 
     let effectiveFinalUrl: URL;
@@ -763,7 +765,8 @@ export class WebsiteScannerService {
     maxPages: number,
     options: {
       ignoreHttpsErrors?: boolean;
-    } = {}
+    } = {},
+    workspaceId?: string
   ): Promise<{
     attempted: boolean;
     result: BrowserCrawlResult | null;
@@ -780,12 +783,21 @@ export class WebsiteScannerService {
     }
 
     try {
+      const proxySettings: BrowserLaunchProxySettings | null =
+        this.privateMode && workspaceId
+          ? await this.privateMode.getBrowserProxySettings(
+              workspaceId,
+              "external_url_access"
+            )
+          : null;
+
       return {
         attempted: true,
         result: await this.browserCrawler.crawl({
           url,
           maxPages,
-          ignoreHttpsErrors: options.ignoreHttpsErrors
+          ignoreHttpsErrors: options.ignoreHttpsErrors,
+          proxy: proxySettings
         }),
         warnings: options.ignoreHttpsErrors
           ? [

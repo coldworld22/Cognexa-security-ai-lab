@@ -1,16 +1,11 @@
 "use client";
 
-import {
-  FormEvent,
-  KeyboardEvent,
-  useEffect,
-  useRef,
-  useState
-} from "react";
-import { SendHorizontal, SlidersHorizontal } from "lucide-react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { ChevronDown, SendHorizontal, SlidersHorizontal } from "lucide-react";
 
 import { useI18n } from "@/lib/i18n";
 import { LlmProviderCatalog } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 interface MessageComposerProps {
   providers: LlmProviderCatalog[];
@@ -33,11 +28,13 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const { t } = useI18n();
   const [message, setMessage] = useState("");
+  const [isRuntimeOpen, setIsRuntimeOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const selectedProviderCatalog = providers.find(
     (provider) => provider.id === selectedProvider
   );
   const models = selectedProviderCatalog?.models ?? [];
+  const compactModel = selectedModel.replace(/:latest$/i, "");
   const isProviderCatalogLoaded = providers.length > 0;
   const isModelReady =
     models.length > 0 &&
@@ -46,7 +43,13 @@ export function MessageComposer({
         model.replace(/:latest$/i, "").toLowerCase() ===
         selectedModel.replace(/:latest$/i, "").toLowerCase()
     );
-  const isSubmitDisabled = disabled || !isModelReady;
+  const hasMessage = message.trim().length > 0;
+  const isComposerDisabled = disabled || !isModelReady;
+  const isSubmitDisabled = isComposerDisabled || !hasMessage;
+  const runtimeLabel =
+    selectedProvider && compactModel
+      ? `${selectedProvider} / ${compactModel}`
+      : selectedProvider || compactModel || t("chat.modelUnassigned");
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -55,12 +58,20 @@ export function MessageComposer({
     }
 
     textarea.style.height = "0px";
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, [message]);
+
+  useEffect(() => {
+    if (disabled) {
+      return;
+    }
+
+    textareaRef.current?.focus();
+  }, [disabled]);
 
   async function submitMessage() {
     const trimmed = message.trim();
-    if (!trimmed || isSubmitDisabled) {
+    if (!trimmed || isComposerDisabled) {
       return;
     }
 
@@ -85,20 +96,39 @@ export function MessageComposer({
   return (
     <form
       onSubmit={handleSubmit}
-      className="rounded-[26px] border border-white/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.97)_0%,rgba(247,250,252,0.92)_100%)] px-4 py-3 shadow-[0_20px_60px_rgba(15,23,42,0.06)] backdrop-blur sm:px-5"
+      className="rounded-[30px] border border-white/90 bg-[linear-gradient(180deg,rgba(255,255,255,0.98)_0%,rgba(247,250,252,0.94)_100%)] px-3 py-3 shadow-[0_24px_70px_rgba(15,23,42,0.08)] backdrop-blur sm:px-4"
     >
       <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <div className="inline-flex items-center gap-2 rounded-full border border-black/5 bg-white/70 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-black/45">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setIsRuntimeOpen((current) => !current)}
+            className="inline-flex items-center gap-2 rounded-full border border-black/6 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)] transition hover:border-black/10 hover:text-[var(--text-primary)]"
+          >
             <SlidersHorizontal className="size-3.5" />
             {t("composer.runtime")}
-          </div>
+            <ChevronDown
+              className={cn(
+                "size-3.5 transition",
+                isRuntimeOpen && "rotate-180"
+              )}
+            />
+          </button>
 
-          <div className="grid gap-2 sm:grid-cols-2 lg:min-w-[28rem] lg:flex-1 lg:max-w-[38rem]">
+          <div
+            className="max-w-full truncate rounded-full border border-black/6 bg-white px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-tertiary)]"
+            title={runtimeLabel}
+          >
+            {runtimeLabel}
+          </div>
+        </div>
+
+        {isRuntimeOpen ? (
+          <div className="grid gap-2 border-t border-black/5 px-2 pt-3 sm:grid-cols-2">
             <select
               value={selectedProvider}
               onChange={(event) => onProviderChange(event.target.value)}
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-[#111827] outline-none"
+              className="w-full rounded-[20px] border border-black/8 bg-white px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/30"
             >
               {providers.map((provider) => (
                 <option
@@ -112,11 +142,12 @@ export function MessageComposer({
                 </option>
               ))}
             </select>
+
             <select
               value={selectedModel}
               onChange={(event) => onModelChange(event.target.value)}
               disabled={models.length === 0}
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-[#111827] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              className="w-full rounded-[20px] border border-black/8 bg-white px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/30 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {models.length > 0 ? (
                 models.map((model) => (
@@ -129,7 +160,7 @@ export function MessageComposer({
               )}
             </select>
           </div>
-        </div>
+        ) : null}
 
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
           <textarea
@@ -139,33 +170,30 @@ export function MessageComposer({
             onChange={(event) => setMessage(event.target.value)}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={isSubmitDisabled}
+            disabled={isComposerDisabled}
             placeholder={t("composer.placeholder")}
-            className="max-h-[200px] min-h-[56px] w-full resize-none overflow-y-auto rounded-[22px] border border-black/6 bg-white/78 px-4 py-4 text-[15px] leading-6 text-[#111827] outline-none transition focus:border-[var(--brand-blue)]/35 placeholder:text-black/40"
+            className="max-h-[220px] min-h-[62px] w-full resize-none overflow-y-auto rounded-[24px] border border-black/8 bg-white px-4 py-4 text-[15px] leading-6 text-[var(--text-primary)] outline-none transition focus:border-[var(--brand-blue)]/35 placeholder:text-black/36"
           />
 
           <button
             type="submit"
             disabled={isSubmitDisabled}
-            className="inline-flex h-[56px] w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-5 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.22)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-black/20 disabled:shadow-none lg:w-auto lg:min-w-[126px]"
+            className="inline-flex h-[56px] w-full items-center justify-center rounded-full bg-[linear-gradient(135deg,#16adf6_0%,#0d7bd5_100%)] px-5 text-sm font-semibold text-white shadow-[0_18px_40px_rgba(21,167,243,0.24)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-black/20 disabled:shadow-none lg:w-[56px] lg:px-0"
+            aria-label={disabled ? t("composer.responding") : t("composer.send")}
+            title={disabled ? t("composer.responding") : t("composer.send")}
           >
             <SendHorizontal className="size-4" />
-            {disabled ? t("composer.responding") : t("composer.send")}
           </button>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-black/5 pt-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs uppercase tracking-[0.18em] text-black/42">
-            {t("composer.enterToSend")}
-          </p>
-          <p className="text-xs text-black/46">
-            {t("composer.autoExpand")}
-          </p>
+        <div className="flex flex-col gap-2 border-t border-black/5 px-2 pt-3 text-xs text-[var(--text-tertiary)] sm:flex-row sm:items-center sm:justify-between">
+          <p>{t("composer.enterToSend")}</p>
+          <p>{disabled ? t("composer.responding") : t("composer.autoExpand")}</p>
         </div>
       </div>
 
       {isProviderCatalogLoaded && selectedProviderCatalog && models.length === 0 ? (
-        <p className="mt-3 text-sm text-amber-700">
+        <p className="mt-3 px-2 text-sm text-amber-700">
           {t("composer.noLocalModels", { provider: selectedProvider })}
         </p>
       ) : null}

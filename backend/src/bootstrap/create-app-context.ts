@@ -1,3 +1,6 @@
+import { Pool } from "pg";
+import { Logger } from "pino";
+
 import { createLogger } from "../config/logger";
 import { createPostgresPool } from "../database/postgres";
 import { createRedisClient } from "../database/redis";
@@ -26,6 +29,7 @@ import { AuthorizedSecurityTestEventRepository } from "../database/repositories/
 import { PrivateModeConfigRepository } from "../database/repositories/private-mode-config.repository";
 import { PrivateModeSessionRepository } from "../database/repositories/private-mode-session.repository";
 import { PrivateModeExitLogRepository } from "../database/repositories/private-mode-exit-log.repository";
+import { MobileScanResultRepository } from "../database/repositories/mobile-scan-result.repository";
 import { PgVectorStore } from "../rag/vector-stores/pgvector.store";
 import { QdrantVectorStore } from "../rag/vector-stores/qdrant.store";
 import { ProviderFactory } from "../llm/provider-factory";
@@ -67,6 +71,17 @@ import {
   resolveBrowserExecutablePath
 } from "../services/website-scanner/headless-browser-crawler";
 import { getDevModeConfig } from "../config/dev-mode.config";
+import { ProxyManagerService } from "../services/proxy/proxy-manager.service";
+import { SystemProxyService } from "../services/system-proxy/system-proxy.service";
+import { BrowserProxyService } from "../services/browser/browser-proxy.service";
+import { WebRTCBlockService } from "../services/webrtc/webrtc-block.service";
+import { SystemDNSService } from "../services/dns/system-dns.service";
+import { IPLeakPreventionService } from "../services/ip-leak/ip-leak-prevention.service";
+import { BrowserFingerprintService } from "../services/fingerprint/browser-fingerprint.service";
+import { AppProxyService } from "../services/app-proxy/app-proxy.service";
+import { FullProtectionToggleService } from "../services/toggle/full-protection-toggle.service";
+import { SystemProtectionService } from "../services/system-protection/system-protection.service";
+import { MobileScanService } from "../services/mobile/mobile-scan.service";
 
 export async function createAppContext(): Promise<AppContext> {
   const logger = createLogger();
@@ -75,12 +90,15 @@ export async function createAppContext(): Promise<AppContext> {
     logger.error({ error }, "PostgreSQL pool error");
   });
 
-  const redis = createRedisClient(env.REDIS_URL);
+  const redis = createRedisClient(env.REDIS_URL, {
+    storagePath: env.STORAGE_PATH
+  });
   redis.on("error", (error) => {
     logger.error({ error }, "Redis client error");
   });
 
   await initializeRuntime(postgres, redis, logger);
+  const ragEnabled = await detectRagAvailability(postgres, logger);
 
   const repositories = {
     users: new UserRepository(postgres),
@@ -107,7 +125,8 @@ export async function createAppContext(): Promise<AppContext> {
     authorizedSecurityTestEvents: new AuthorizedSecurityTestEventRepository(postgres),
     privateModeConfigs: new PrivateModeConfigRepository(postgres),
     privateModeSessions: new PrivateModeSessionRepository(postgres),
-    privateModeExitLogs: new PrivateModeExitLogRepository(postgres)
+    privateModeExitLogs: new PrivateModeExitLogRepository(postgres),
+    mobileScanResults: new MobileScanResultRepository(postgres)
   };
 
   const toolRegistry = new ToolRegistry(logger);
@@ -169,6 +188,7 @@ export async function createAppContext(): Promise<AppContext> {
     embeddingService,
     retrieval,
     {
+      enabled: ragEnabled,
       maxChunks: env.RAG_MAX_CHUNKS,
       similarityThreshold: env.RAG_SIMILARITY_THRESHOLD,
       maxContextTokens: env.RAG_MAX_CONTEXT_TOKENS
@@ -191,7 +211,10 @@ export async function createAppContext(): Promise<AppContext> {
     new TextChunker(),
     authorization,
     retrievalContext,
-    policy
+    policy,
+    {
+      enabled: ragEnabled
+    }
   );
   const auth = new AuthService(repositories.users, redis, workspace);
   await auth.initialize();
@@ -230,21 +253,82 @@ export async function createAppContext(): Promise<AppContext> {
   const browserExecutablePath = resolveBrowserExecutablePath(
     env.WEBSITE_SCANNER_BROWSER_PATH
   );
+  const proxyManager = new ProxyManagerService({
+    logger,
+    getTorSession: async (workspaceId) => {
+      const activeSession =
+        await repositories.privateModeSessions.findActiveByWorkspaceId(workspaceId);
+      if (!activeSession) {
+        return null;
+      }
+
+      const config = await repositories.privateModeConfigs.findByWorkspaceId(workspaceId);
+      return {
+        workspaceId,
+        torSocksPort: config?.torSocksPort ?? 9050
+      };
+    }
+  });
+  const systemProxy = new SystemProxyService({
+    logger
+  });
+  const browserProxy = new BrowserProxyService({
+    logger
+  });
+  const webrtcBlock = new WebRTCBlockService({
+    logger
+  });
+  const systemDns = new SystemDNSService({
+    logger
+  });
+  const ipLeakPrevention = new IPLeakPreventionService({
+    logger
+  });
+  const fingerprint = new BrowserFingerprintService({
+    logger
+  });
+  const appProxy = new AppProxyService(systemProxy, ipLeakPrevention, {
+    logger
+  });
+  const fullProtectionToggle = new FullProtectionToggleService(
+    systemProxy,
+    browserProxy,
+    appProxy,
+    webrtcBlock,
+    systemDns,
+    ipLeakPrevention,
+    fingerprint,
+    {
+      logger
+    }
+  );
   const privateMode = new CloakingService(
     repositories.privateModeConfigs,
     repositories.privateModeSessions,
     repositories.privateModeExitLogs,
-    logger
+    logger,
+    {
+      proxyManager,
+      fullProtectionToggle
+    }
+  );
+  await privateMode.initialize();
+  const systemProtection = new SystemProtectionService(
+    privateMode,
+    fullProtectionToggle,
+    {
+      logger
+    }
   );
   const devModeConfig = getDevModeConfig();
   const verificationBypass = new VerificationBypassService(devModeConfig);
   const authorizedTestingDevelopmentLocalTargetsEnabled =
     env.NODE_ENV === "development" && env.AUTHORIZED_TESTING_DEV_MODE;
   const websiteScanner = new WebsiteScannerService(authorization, policy, {
-    allowDevelopmentLocalTargets: authorizedTestingDevelopmentLocalTargetsEnabled,
-    privateMode,
-    browserCrawler: browserExecutablePath
-      ? new HeadlessBrowserCrawler({
+      allowDevelopmentLocalTargets: authorizedTestingDevelopmentLocalTargetsEnabled,
+      privateMode,
+      browserCrawler: browserExecutablePath
+        ? new HeadlessBrowserCrawler({
           executablePath: browserExecutablePath,
           allowDevelopmentLocalTargets:
             authorizedTestingDevelopmentLocalTargetsEnabled
@@ -255,6 +339,11 @@ export async function createAppContext(): Promise<AppContext> {
     defaultProvider: env.DEFAULT_LLM_PROVIDER,
     defaultModel: env.DEFAULT_LLM_MODEL
   });
+  const mobileScanning = new MobileScanService(
+    repositories.mobileScanResults,
+    privateMode,
+    logger
+  );
   const authorizedTesting = new AuthorizedSecurityTestingService(
     authorization,
     policy,
@@ -295,6 +384,7 @@ export async function createAppContext(): Promise<AppContext> {
     endpoints,
     websiteScanner,
     securityReview,
+    mobileScanning,
     authorizedTesting,
     privateMode,
     penetrationTesting
@@ -320,9 +410,46 @@ export async function createAppContext(): Promise<AppContext> {
       policy,
       privateMode,
       penetrationTesting,
+      systemProtection,
       tools,
       health,
       workspace
     }
   };
+}
+
+async function detectRagAvailability(
+  postgres: Pool,
+  logger: Logger
+): Promise<boolean> {
+  try {
+    const result = await postgres.query<{
+      vector_extension_installed: boolean;
+      embeddings_table_exists: boolean;
+    }>(`
+      SELECT
+        EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') AS vector_extension_installed,
+        to_regclass('public.embeddings') IS NOT NULL AS embeddings_table_exists
+    `);
+
+    const capability = result.rows[0];
+    const enabled = Boolean(
+      capability?.vector_extension_installed && capability?.embeddings_table_exists
+    );
+
+    if (!enabled) {
+      logger.warn(
+        {
+          vectorExtensionInstalled: capability?.vector_extension_installed ?? false,
+          embeddingsTableExists: capability?.embeddings_table_exists ?? false
+        },
+        "pgvector is unavailable; RAG endpoints will stay disabled"
+      );
+    }
+
+    return enabled;
+  } catch (error) {
+    logger.warn({ error }, "Failed to detect pgvector support; disabling RAG");
+    return false;
+  }
 }

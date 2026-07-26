@@ -326,7 +326,10 @@ const ar = {
     label: "Private Mode",
     title: "Cloak outbound testing traffic behind controlled anonymity layers",
     description:
-      "Configure Tor-first routing, staged VPN relay chains, or hybrid cloaking before security testing workflows leave the platform.",
+      "اضبط مسار الخروج المنظَّم الذي تستخدمه فحوصات المواقع والاختبارات المصرح بها. المسارات المعتمدة على Tor تُنفذ داخل التطبيق، بينما تظل ملفات VPN-chain معتمدة على نفق خارجي خارج التطبيق.",
+    capabilityTitle: "حدود الإمكانات",
+    capabilityDescription:
+      "يتحقق Private Mode من المسار الذي يستخدمه ويسجله، لكنه لا ينفذ تنسيق VPN داخل التطبيق ولا ينتحل بصمة مصافحة TLS.",
     loading: "Loading private mode state...",
     loadFailed: "Failed to load private mode state.",
     refresh: "Refresh",
@@ -363,19 +366,25 @@ const ar = {
     strategy: "Routing strategy",
     strategies: {
       tor: "Tor only",
-      "vpn-chain": "VPN chain",
-      hybrid: "Hybrid",
-      "rotating-proxy": "Rotating proxy"
+      "vpn-chain": "سلسلة VPN (خارجية)",
+      hybrid: "هجين (Tor للفئات الحساسة)",
+      "rotating-proxy": "تدوير دوائر Tor"
     },
     dnsTor: "DNS over Tor",
     dnsLocal: "Local DNS",
     dnsOverTor: "Resolve DNS through the cloaked transport when possible",
-    tlsFingerprint: "TLS fingerprint profile",
+    tlsFingerprint: "ملف هوية الطلب",
     fingerprintProfiles: {
-      browser: "Browser",
-      curl: "curl",
-      random: "Random"
+      browser: "رؤوس شبيهة بالمتصفح",
+      curl: "رؤوس curl",
+      random: "رؤوس User-Agent متغيرة"
     },
+    torBackedStrategies: "استراتيجيات مدعومة عبر Tor",
+    externalTunnelStrategies: "تتطلب نفقًا خارجيًا",
+    headerProfileNotice:
+      "هذه الملفات تغيّر رؤوس طلب HTTP فقط مثل User-Agent.",
+    tlsSpoofingUnavailable:
+      "لا يقوم التطبيق بانتحال مصافحة TLS أو بصمة JA3.",
     torSocksPort: "Tor SOCKS port",
     torControlPort: "Tor control port",
     rotationInterval: "Circuit rotation interval (sec)",
@@ -411,11 +420,11 @@ const ar = {
     requiredForSecurityModules:
       "Private Mode must be active before using website scanning or security testing modules.",
     verifiedRequiredForSecurityModules:
-      "Private Mode must be active and its exit path verified before using website scanning or security testing modules.",
+      "Private Mode must be active, its exit path verified, and the deployment must be running on HTTPS before using website scanning or security testing modules.",
     activateBeforeSecurityTools:
       "Activate Private Mode first, then return to this tool.",
     verifyBeforeSecurityTools:
-      "Verify the exit path in Private Mode, then return to this tool.",
+      "Review the exit path and HTTPS transport in Private Mode, then return to this tool.",
     openConsole: "Open Private Mode",
     activationTimelineTitle: "Connection stage",
     connectionProgress: "Stage {current} of {total}",
@@ -445,7 +454,7 @@ const ar = {
       connected:
         "The cloaked session is established and the latest verification confirmed an isolated exit path. Website scanning and authorized security workflows can proceed.",
       warning:
-        "The cloaked session is up, but the latest verification reported leaks or an unconfirmed exit route. Review the verification result before using security modules.",
+        "The cloaked session is up, but the latest verification reported leaks, an unconfirmed exit route, or an insecure HTTP deployment transport. Review the verification result before using security modules.",
       failed:
         "Activation stopped before the cloaked route was ready. Review the failed stage, adjust the profile if needed, and retry the connection."
     },
@@ -475,7 +484,7 @@ const ar = {
       verify: {
         title: "Verify exit path",
         description:
-          "Check the observed exit IP and leak indicators before treating the route as ready for security operations."
+          "Check the observed exit IP, leak indicators, and deployment HTTPS transport before treating the route as ready for security operations."
       },
       active: {
         title: "Unlock security tools",
@@ -497,6 +506,8 @@ const ar = {
       "Private Mode is active, but verification reported warnings on the current exit route.",
     verificationWarnings:
       "Verification completed with warnings. Review the exit path before continuing.",
+    httpTransportWarning:
+      "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before treating the route as ready for security operations.",
     snapshotTitle: "Connection snapshot",
     snapshotHeading: "Direct identity versus cloaked identity",
     snapshotDescription:
@@ -531,6 +542,12 @@ const ar = {
     },
     leakCodes: {
       private_mode_inactive: "Private Mode is not active for this workspace.",
+      system_proxy_inactive:
+        "Windows system proxy enforcement is not fully active, so browser and app traffic may bypass the cloaked route.",
+      webrtc_protection_incomplete:
+        "WebRTC leak protections are incomplete, so browsers may still expose network identity through peer-connection paths.",
+      ip_leak_rules_inactive:
+        "The firewall leak-prevention rules are not active, so direct DNS, STUN, QUIC, or browser bypass traffic may escape.",
       exit_ip_unavailable: "The service could not observe an exit IP for the current route.",
       tor_exit_unconfirmed: "The verification path should be Tor-backed, but the observed exit was not confirmed as a Tor exit.",
       exit_ip_matches_direct_path:
@@ -546,7 +563,15 @@ const ar = {
       hybrid_sensitive_categories_disabled:
         "Hybrid mode fell back to an external URL path for verification because the sensitive cloaked categories are not enabled in this profile.",
       rotating_proxy_uses_tor_transport:
-        "Rotating proxy currently uses the Tor-backed transport inside the app rather than a separate managed proxy pool."
+        "Rotating proxy currently uses the Tor-backed transport inside the app rather than a separate managed proxy pool.",
+      browser_proxy_review_required:
+        "Protected browser shortcuts or browser policy bindings are incomplete. Review the desktop launchers before sensitive browsing.",
+      app_proxy_enforcement_incomplete:
+        "App-level enforcement could not confirm both the system proxy bridge and the browser kill-switch rules together.",
+      system_dns_not_forced:
+        "DNS-over-Tor was requested, but the local Tor DNS listener was unavailable or Windows adapter DNS could not be pinned to localhost.",
+      fingerprint_hardening_incomplete:
+        "Fingerprint hardening is incomplete, so protected browser profiles still need review before high-sensitivity browsing."
     }
   },
   authorizedTesting: {

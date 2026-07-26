@@ -7,11 +7,22 @@
     "backend"
   ],
   "scripts": {
+    "dev": "npm run dev:up",
     "certs:dev": "node scripts/generate-localhost-certificates.mjs",
+    "dev:up": "powershell -ExecutionPolicy Bypass -File scripts/start-dev.ps1",
+    "dev:down": "powershell -ExecutionPolicy Bypass -File scripts/stop-dev.ps1",
     "dev:frontend": "npm run dev --workspace frontend",
+    "dev:frontend:http": "npm run dev:http --workspace frontend",
     "dev:frontend:https": "npm run dev:https --workspace frontend",
     "dev:backend": "npm run dev --workspace @security-ai-lab/backend",
+    "dev:backend:http": "npm run dev:http --workspace @security-ai-lab/backend",
     "dev:backend:https": "npm run dev:https --workspace @security-ai-lab/backend",
+    "startup:install": "powershell -ExecutionPolicy Bypass -File scripts/install-windows-startup.ps1",
+    "startup:remove": "powershell -ExecutionPolicy Bypass -File scripts/uninstall-windows-startup.ps1",
+    "protection:activate": "powershell -ExecutionPolicy Bypass -File scripts/protect-pc.ps1 -Action Activate",
+    "protection:deactivate": "powershell -ExecutionPolicy Bypass -File scripts/protect-pc.ps1 -Action Deactivate",
+    "protection:status": "powershell -ExecutionPolicy Bypass -File scripts/protect-pc.ps1 -Action Status",
+    "protection:tray": "node desktop-app/tray-application.js",
     "build": "npm run build --workspace frontend && npm run build --workspace @security-ai-lab/backend",
     "typecheck": "npm run typecheck --workspace frontend && npm run typecheck --workspace @security-ai-lab/backend",
     "seed": "npm run seed --workspace @security-ai-lab/backend"

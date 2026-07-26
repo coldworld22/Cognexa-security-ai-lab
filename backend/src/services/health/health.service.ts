@@ -1,12 +1,12 @@
 import { Pool } from "pg";
-import { RedisClientType } from "redis";
 
+import { KeyValueStore } from "../../database/key-value-store";
 import { ProviderFactory } from "../../llm/provider-factory";
 
 export class HealthService {
   constructor(
     private readonly postgres: Pool,
-    private readonly redis: RedisClientType,
+    private readonly redis: KeyValueStore,
     private readonly providers: ProviderFactory,
     private readonly llmBaseUrl: string
   ) {}

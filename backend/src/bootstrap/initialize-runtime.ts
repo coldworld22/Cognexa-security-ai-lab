@@ -2,16 +2,16 @@ import { mkdir } from "fs/promises";
 
 import { Pool } from "pg";
 import { Logger } from "pino";
-import { RedisClientType } from "redis";
 
 import { env } from "../config/env";
+import { KeyValueStore } from "../database/key-value-store";
 import { runMigrations } from "../database/migration-runner";
 import { resolveBackendPath } from "../utils/paths";
 import { retry } from "../utils/retry";
 
 export async function initializeRuntime(
   postgres: Pool,
-  redis: RedisClientType,
+  redis: KeyValueStore,
   logger: Logger
 ): Promise<void> {
   await ensureRuntimeDirectories(logger);
@@ -56,7 +56,7 @@ async function ensurePostgresReady(postgres: Pool, logger: Logger): Promise<void
 }
 
 async function ensureRedisReady(
-  redis: RedisClientType,
+  redis: KeyValueStore,
   logger: Logger
 ): Promise<void> {
   await retry(

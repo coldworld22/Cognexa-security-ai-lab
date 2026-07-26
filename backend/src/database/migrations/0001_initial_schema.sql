@@ -1,4 +1,14 @@
-CREATE EXTENSION IF NOT EXISTS vector;
+DO $$
+BEGIN
+  BEGIN
+    CREATE EXTENSION IF NOT EXISTS vector;
+  EXCEPTION
+    WHEN undefined_file OR feature_not_supported OR insufficient_privilege THEN
+      RAISE NOTICE 'pgvector extension is unavailable; embeddings table creation will be skipped.';
+  END;
+END
+$$;
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS users (
@@ -47,16 +57,24 @@ CREATE TABLE IF NOT EXISTS files (
   updated_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS embeddings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  chunk_index INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  vector VECTOR NOT NULL,
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL
-);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+    EXECUTE $embeddings$
+      CREATE TABLE IF NOT EXISTS embeddings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        vector VECTOR NOT NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      )
+    $embeddings$;
+  END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS memories (
   id UUID PRIMARY KEY,

@@ -13,6 +13,11 @@ import { PrivateModeSessionRepository } from "../../database/repositories/privat
 import { AppError } from "../../utils/app-error";
 import { PolicyCategory } from "../../policy/policy.types";
 import {
+  BrowserProxySettings,
+  ProxyManagerService
+} from "../proxy/proxy-manager.service";
+import { FullProtectionToggleService } from "../toggle/full-protection-toggle.service";
+import {
   CircuitStatus,
   ConnectionIdentity,
   CloakingConfig,
@@ -22,6 +27,7 @@ import {
   DnsLookupResult,
   ExitLog,
   LeakTestResult,
+  PrivateModeCapabilities,
   PRIVATE_MODE_OUTBOUND_STRATEGIES,
   PrivateModeOutboundStrategy,
   RelayNode
@@ -44,6 +50,11 @@ interface CloakingServiceOptions {
   directFetch?: typeof fetch;
   lookupHost?: typeof lookup;
   resolveTxtImpl?: typeof resolveTxt;
+  proxyManager?: ProxyManagerService;
+  fullProtectionToggle?: FullProtectionToggleService;
+  keepaliveIntervalMs?: number;
+  setIntervalImpl?: typeof setInterval;
+  clearIntervalImpl?: typeof clearInterval;
 }
 
 interface DnsAnswer {
@@ -77,11 +88,33 @@ interface TorStatusResponse {
   IsTor?: boolean;
 }
 
+const TOR_BACKED_STRATEGIES: PrivateModeOutboundStrategy[] = [
+  "tor",
+  "hybrid",
+  "rotating-proxy"
+];
+const DEFAULT_PROTECTION_WATCHDOG_INTERVAL_MS = 15_000;
+const REPAIRABLE_FULL_PROTECTION_LEAKS = new Set([
+  "system_proxy_inactive",
+  "webrtc_protection_incomplete",
+  "ip_leak_rules_inactive"
+]);
+const EXTERNAL_TUNNEL_REQUIRED_STRATEGIES: PrivateModeOutboundStrategy[] = [
+  "vpn-chain"
+];
+
 export class CloakingService {
   private readonly now: () => Date;
   private readonly directFetch: typeof fetch;
   private readonly lookupHost: typeof lookup;
   private readonly resolveTxtImpl: typeof resolveTxt;
+  private readonly proxyManager?: ProxyManagerService;
+  private readonly fullProtectionToggle?: FullProtectionToggleService;
+  private readonly protectionWatchdogIntervalMs: number;
+  private readonly setIntervalImpl: typeof setInterval;
+  private readonly clearIntervalImpl: typeof clearInterval;
+  private protectionWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private protectionWatchdogRun: Promise<void> | null = null;
 
   constructor(
     private readonly configs: PrivateModeConfigRepository,
@@ -94,6 +127,45 @@ export class CloakingService {
     this.directFetch = options.directFetch ?? fetch;
     this.lookupHost = options.lookupHost ?? lookup;
     this.resolveTxtImpl = options.resolveTxtImpl ?? resolveTxt;
+    this.proxyManager = options.proxyManager;
+    this.fullProtectionToggle = options.fullProtectionToggle;
+    this.protectionWatchdogIntervalMs =
+      options.keepaliveIntervalMs ?? DEFAULT_PROTECTION_WATCHDOG_INTERVAL_MS;
+    this.setIntervalImpl = options.setIntervalImpl ?? setInterval;
+    this.clearIntervalImpl = options.clearIntervalImpl ?? clearInterval;
+  }
+
+  async initialize(): Promise<void> {
+    if (!this.proxyManager && !this.fullProtectionToggle) {
+      return;
+    }
+
+    const activeSessions = await this.sessions.listActive(5);
+    if (activeSessions.length === 0) {
+      return;
+    }
+
+    if (activeSessions.length > 1) {
+      this.logger.warn(
+        {
+          activeWorkspaceIds: activeSessions.map((session) => session.workspaceId)
+        },
+        "Multiple active Private Mode sessions were found; applying the newest session to the process-wide proxy"
+      );
+    }
+
+    const latestSession = activeSessions[0];
+    if (!latestSession) {
+      return;
+    }
+
+    const config = await this.getConfig(latestSession.workspaceId);
+    try {
+      await this.syncSystemProxy(latestSession.workspaceId, config);
+      this.ensureProtectionWatchdog();
+    } catch (error) {
+      await this.recoverFromStaleStartupSessions(activeSessions, error);
+    }
   }
 
   async activatePrivateMode(
@@ -121,6 +193,9 @@ export class CloakingService {
       circuitIds: [initialCircuitId],
       startedAt: now
     });
+
+    await this.syncSystemProxy(workspaceId, nextConfig);
+    this.ensureProtectionWatchdog();
 
     const exitIdentity = await this.determineExitIdentity(
       workspaceId,
@@ -156,11 +231,63 @@ export class CloakingService {
       ...current,
       mode: "direct"
     });
+    await this.restoreSystemProxyAfterSessionEnd(session.workspaceId);
+    await this.refreshProtectionWatchdog();
+  }
+
+  async deactivateWorkspace(workspaceId: string): Promise<void> {
+    const activeSession = await this.sessions.findActiveByWorkspaceId(workspaceId);
+    if (activeSession) {
+      await this.deactivatePrivateMode(activeSession.id);
+      return;
+    }
+
+    const current = await this.getConfig(workspaceId);
+    if (current.mode !== "direct") {
+      await this.persistConfig({
+        ...current,
+        mode: "direct"
+      });
+    }
+
+    const remainingActiveSessions = await this.sessions.listActive(5);
+    if (remainingActiveSessions.length > 0) {
+      this.ensureProtectionWatchdog();
+      return;
+    }
+
+    await this.disableProcessWideProtection();
+    await this.stopProtectionWatchdog();
+  }
+
+  async shutdown(): Promise<void> {
+    await this.stopProtectionWatchdog();
+    await this.disableProcessWideProtection();
+
+    const activeSessions = await this.sessions.listActive(100);
+    if (activeSessions.length > 0) {
+      this.logger.info(
+        {
+          sessionCount: activeSessions.length,
+          workspaceIds: [...new Set(activeSessions.map((session) => session.workspaceId))]
+        },
+        "Suspended process-wide Private Mode protections during shutdown; active sessions remain available for startup restore"
+      );
+    }
   }
 
   async getActiveSession(workspaceId: string): Promise<CloakingSession | null> {
     const session = await this.sessions.findActiveByWorkspaceId(workspaceId);
     return session ? this.toSession(session) : null;
+  }
+
+  getCapabilities(): PrivateModeCapabilities {
+    return {
+      torBackedStrategies: [...TOR_BACKED_STRATEGIES],
+      externalTunnelRequiredStrategies: [...EXTERNAL_TUNNEL_REQUIRED_STRATEGIES],
+      tlsHandshakeSpoofing: false,
+      requestIdentityProfilesAdjustHeadersOnly: true
+    };
   }
 
   getOutboundAgent(): HttpAgent {
@@ -185,6 +312,31 @@ export class CloakingService {
     };
   }
 
+  async getBrowserProxySettings(
+    workspaceId: string,
+    category: PolicyCategory = "external_url_access"
+  ): Promise<BrowserProxySettings | null> {
+    if (!this.proxyManager) {
+      return null;
+    }
+
+    const [config, session] = await Promise.all([
+      this.getConfig(workspaceId),
+      this.sessions.findActiveByWorkspaceId(workspaceId)
+    ]);
+
+    if (
+      !session ||
+      !this.proxyManager.isEnabledForWorkspace(workspaceId) ||
+      !this.shouldCloak(config, category) ||
+      !this.usesTorTransport(config, category)
+    ) {
+      return null;
+    }
+
+    return this.proxyManager.getBrowserProxySettings(workspaceId);
+  }
+
   async verifyCloaking(
     workspaceId: string
   ): Promise<CloakingVerificationResult> {
@@ -207,15 +359,32 @@ export class CloakingService {
     const activeSession = await this.sessions.findActiveByWorkspaceId(workspaceId);
     const testedAt = this.now().toISOString();
     const verificationCategory = this.getVerificationCategory(config);
-    const directIdentity = await this.determineExitIdentityDirect().catch(() => null);
+    const torTransportExpected = this.usesTorTransport(config, verificationCategory);
+    const systemProxyLeakTest =
+      this.proxyManager &&
+      activeSession &&
+      this.proxyManager.isEnabledForWorkspace(workspaceId) &&
+      torTransportExpected
+        ? await this.proxyManager.verifyNoLeaks(workspaceId).catch(() => null)
+        : null;
+    const fullProtectionStatus =
+      this.fullProtectionToggle &&
+      activeSession &&
+      config.mode === "cloaked" &&
+      torTransportExpected
+        ? await this.fullProtectionToggle.verifyFullProtection().catch(() => null)
+        : null;
+    const directIdentity =
+      systemProxyLeakTest?.directIdentity ??
+      (await this.determineExitIdentityDirect().catch(() => null));
     const routedIdentity =
-      config.mode === "cloaked" && activeSession
+      systemProxyLeakTest?.exitIdentity ??
+      (config.mode === "cloaked" && activeSession
         ? await this.determineExitIdentity(workspaceId, verificationCategory).catch(
             () => null
           )
-        : directIdentity;
-    const leaks: string[] = [];
-    const torTransportExpected = this.usesTorTransport(config, verificationCategory);
+        : directIdentity);
+    const leaks = [...(systemProxyLeakTest?.leaks ?? [])];
 
     if (!activeSession || config.mode !== "cloaked") {
       leaks.push("private_mode_inactive");
@@ -253,6 +422,23 @@ export class CloakingService {
       leaks.push("dns_over_tor_requested_without_tor_transport");
     }
 
+    if (fullProtectionStatus) {
+      leaks.push(...fullProtectionStatus.leaks);
+    }
+
+    if (routedIdentity?.ip) {
+      this.removeLeak(leaks, "exit_ip_unavailable");
+    }
+
+    if (torTransportExpected && routedIdentity?.isTorExit === true) {
+      this.removeLeak(leaks, "tor_exit_unconfirmed");
+    }
+
+    const transportVerified = Boolean(
+      systemProxyLeakTest?.transportVerified ||
+        this.isTransportVerified(config, verificationCategory, routedIdentity)
+    );
+
     return {
       testedAt,
       strategy:
@@ -261,20 +447,21 @@ export class CloakingService {
       exitIp: routedIdentity?.ip ?? null,
       exitRegion: routedIdentity?.country ?? routedIdentity?.region ?? null,
       dnsTransport:
-        config.mode === "cloaked" && config.dnsOverTor && torTransportExpected
+        systemProxyLeakTest?.dnsTransport ??
+        (config.mode === "cloaked" && config.dnsOverTor && torTransportExpected
           ? "tor"
-          : "local",
-      isTorExit: routedIdentity?.isTorExit ?? null,
-      leaks,
+          : "local"),
+      isTorExit: systemProxyLeakTest?.isTorExit ?? routedIdentity?.isTorExit ?? null,
+      leaks: this.uniqueStrings(leaks),
       directIdentity,
       exitIdentity: routedIdentity,
       verificationCategory,
-      transportVerified: this.isTransportVerified(
-        config,
-        verificationCategory,
-        routedIdentity
-      ),
-      advisories: this.buildVerificationAdvisories(config, verificationCategory)
+      transportVerified,
+      advisories: this.uniqueStrings([
+        ...this.buildVerificationAdvisories(config, verificationCategory),
+        ...(systemProxyLeakTest?.advisories ?? []),
+        ...(fullProtectionStatus?.advisories ?? [])
+      ])
     };
   }
 
@@ -328,15 +515,24 @@ export class CloakingService {
     config: Partial<CloakingConfig>
   ): Promise<CloakingConfig> {
     const current = await this.getConfig(workspaceId);
-    return this.persistConfig({
+    const activeSession = await this.sessions.findActiveByWorkspaceId(workspaceId);
+    const nextConfig = await this.persistConfig({
       ...current,
       ...config,
       workspaceId,
+      mode: activeSession ? "cloaked" : (config.mode ?? current.mode),
       vpnRelays: config.vpnRelays ?? current.vpnRelays,
       exitGeographyPreference:
         config.exitGeographyPreference ?? current.exitGeographyPreference,
       enabledCategories: config.enabledCategories ?? current.enabledCategories
     });
+
+    if (activeSession) {
+      await this.syncSystemProxy(workspaceId, nextConfig);
+      this.ensureProtectionWatchdog();
+    }
+
+    return nextConfig;
   }
 
   async getConfig(workspaceId: string): Promise<CloakingConfig> {
@@ -554,6 +750,12 @@ export class CloakingService {
     return (
       config.mode === "cloaked" &&
       config.enabledCategories.includes(category)
+    );
+  }
+
+  private usesTorTransportForAnyEnabledCategory(config: CloakingConfig): boolean {
+    return config.enabledCategories.some((category) =>
+      this.usesTorTransport(config, category)
     );
   }
 
@@ -877,9 +1079,13 @@ export class CloakingService {
   }
 
   private async determineExitIdentityDirect(): Promise<ConnectionIdentity> {
-    return this.fetchConnectionIdentity((input, init) =>
-      this.directFetch(input, init)
-    );
+    if (this.proxyManager) {
+      return this.proxyManager.runWithoutProxy(() =>
+        this.fetchConnectionIdentity((input, init) => this.directFetch(input, init))
+      );
+    }
+
+    return this.fetchConnectionIdentity((input, init) => this.directFetch(input, init));
   }
 
   private async fetchConnectionIdentity(
@@ -1069,8 +1275,241 @@ export class CloakingService {
     return ["tor-pending"];
   }
 
+  private async syncSystemProxy(
+    workspaceId: string,
+    config: CloakingConfig
+  ): Promise<void> {
+    if (!this.proxyManager && !this.fullProtectionToggle) {
+      return;
+    }
+
+    if (config.mode !== "cloaked" || !this.usesTorTransportForAnyEnabledCategory(config)) {
+      if (this.proxyManager) {
+        await this.proxyManager.disableSystemProxy(workspaceId);
+      }
+      if (this.fullProtectionToggle) {
+        await this.fullProtectionToggle.deactivateFullProtection();
+      }
+      return;
+    }
+
+    if (this.proxyManager) {
+      await this.proxyManager.enableSystemProxy(workspaceId);
+    }
+    if (this.fullProtectionToggle) {
+      await this.fullProtectionToggle.activateFullProtection({
+        workspaceId,
+        torSocksPort: config.torSocksPort,
+        torDnsPort: config.torSocksPort + 3,
+        dnsOverTor: config.dnsOverTor,
+        enableKillSwitch: true
+      });
+    }
+  }
+
+  private async restoreSystemProxyAfterSessionEnd(
+    workspaceId: string
+  ): Promise<void> {
+    await this.disableProcessWideProtection(workspaceId);
+
+    const nextActiveSession = (await this.sessions.listActive(5)).find(
+      (session) => session.workspaceId !== workspaceId
+    );
+
+    if (!nextActiveSession) {
+      return;
+    }
+
+    const nextConfig = await this.getConfig(nextActiveSession.workspaceId);
+    await this.syncSystemProxy(nextActiveSession.workspaceId, nextConfig);
+    this.ensureProtectionWatchdog();
+  }
+
+  private async disableProcessWideProtection(workspaceId?: string): Promise<void> {
+    if (!this.proxyManager && !this.fullProtectionToggle) {
+      return;
+    }
+
+    if (this.proxyManager) {
+      await this.proxyManager.disableSystemProxy(workspaceId);
+    }
+    if (this.fullProtectionToggle) {
+      await this.fullProtectionToggle.deactivateFullProtection();
+    }
+  }
+
+  private async recoverFromStaleStartupSessions(
+    activeSessions: Array<{
+      id: string;
+      workspaceId: string;
+    }>,
+    error: unknown
+  ): Promise<void> {
+    const endedAt = this.now().toISOString();
+    const affectedWorkspaceIds = [...new Set(activeSessions.map((session) => session.workspaceId))];
+
+    this.logger.warn(
+      {
+        error,
+        workspaceIds: affectedWorkspaceIds
+      },
+      "Failed to restore Private Mode during startup; ending stale sessions and reverting the affected workspaces to direct mode"
+    );
+
+    for (const session of activeSessions) {
+      await this.sessions.endSession(session.id, endedAt);
+    }
+
+    for (const workspaceId of affectedWorkspaceIds) {
+      const current = await this.getConfig(workspaceId);
+      if (current.mode !== "direct") {
+        await this.persistConfig({
+          ...current,
+          mode: "direct"
+        });
+      }
+    }
+
+    try {
+      await this.disableProcessWideProtection();
+    } catch (cleanupError) {
+      this.logger.warn(
+        {
+          error: cleanupError,
+          workspaceIds: affectedWorkspaceIds
+        },
+        "Failed to clear process-wide Private Mode protections after startup recovery"
+      );
+    }
+  }
+
+  private ensureProtectionWatchdog(): void {
+    if (
+      this.protectionWatchdogTimer ||
+      (!this.proxyManager && !this.fullProtectionToggle)
+    ) {
+      return;
+    }
+
+    this.protectionWatchdogTimer = this.setIntervalImpl(() => {
+      void this.runProtectionWatchdog();
+    }, this.protectionWatchdogIntervalMs);
+  }
+
+  private disableProtectionWatchdogTimer(): void {
+    if (!this.protectionWatchdogTimer) {
+      return;
+    }
+
+    this.clearIntervalImpl(this.protectionWatchdogTimer);
+    this.protectionWatchdogTimer = null;
+  }
+
+  private async stopProtectionWatchdog(): Promise<void> {
+    this.disableProtectionWatchdogTimer();
+    const inFlight = this.protectionWatchdogRun;
+    if (inFlight) {
+      await inFlight.catch(() => undefined);
+    }
+  }
+
+  private async refreshProtectionWatchdog(): Promise<void> {
+    const activeSessions = await this.sessions.listActive(1);
+    if (activeSessions.length === 0) {
+      this.disableProtectionWatchdogTimer();
+      return;
+    }
+
+    this.ensureProtectionWatchdog();
+  }
+
+  private async runProtectionWatchdog(): Promise<void> {
+    if (this.protectionWatchdogRun) {
+      return this.protectionWatchdogRun;
+    }
+
+    this.protectionWatchdogRun = this.maintainActiveProtection().finally(() => {
+      this.protectionWatchdogRun = null;
+    });
+
+    return this.protectionWatchdogRun;
+  }
+
+  private async maintainActiveProtection(): Promise<void> {
+    const activeSessions = await this.sessions.listActive(5);
+    const latestSession = activeSessions[0];
+
+    if (!latestSession) {
+      this.disableProtectionWatchdogTimer();
+      return;
+    }
+
+    const config = await this.getConfig(latestSession.workspaceId);
+    const protectionRequired =
+      config.mode === "cloaked" &&
+      this.usesTorTransportForAnyEnabledCategory(config);
+
+    if (!protectionRequired) {
+      await this.syncSystemProxy(latestSession.workspaceId, config);
+      return;
+    }
+
+    const driftReasons = new Set<string>();
+
+    if (
+      this.proxyManager &&
+      !this.proxyManager.isEnabledForWorkspace(latestSession.workspaceId)
+    ) {
+      driftReasons.add("system_proxy_workspace_mismatch");
+    }
+
+    if (this.fullProtectionToggle) {
+      const protectionStatus =
+        await this.fullProtectionToggle.verifyFullProtection().catch((error) => {
+          this.logger.warn(
+            {
+              error,
+              workspaceId: latestSession.workspaceId
+            },
+            "Private Mode watchdog could not verify the full protection stack"
+          );
+          return null;
+        });
+
+      for (const leak of protectionStatus?.leaks ?? []) {
+        if (REPAIRABLE_FULL_PROTECTION_LEAKS.has(leak)) {
+          driftReasons.add(leak);
+        }
+      }
+    }
+
+    if (driftReasons.size === 0) {
+      return;
+    }
+
+    this.logger.warn(
+      {
+        workspaceId: latestSession.workspaceId,
+        reasons: [...driftReasons]
+      },
+      "Private Mode protection drift detected; reapplying the process-wide protection stack"
+    );
+    await this.syncSystemProxy(latestSession.workspaceId, config);
+  }
+
   private buildCircuitId(strategy: PrivateModeOutboundStrategy): string {
     return `${strategy}:${randomUUID()}`;
+  }
+
+  private removeLeak(leaks: string[], leak: string): void {
+    const index = leaks.indexOf(leak);
+    if (index !== -1) {
+      leaks.splice(index, 1);
+    }
+  }
+
+  private uniqueStrings(values: string[]): string[] {
+    return [...new Set(values)];
   }
 
   private toSession(entity: {

@@ -5,7 +5,8 @@
   "description": "Backend API for the self-hosted Security AI Lab assistant platform.",
   "main": "dist/main.js",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "node ../scripts/run-backend-https.mjs",
+    "dev:http": "tsx watch src/main.ts",
     "dev:https": "node ../scripts/run-backend-https.mjs",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
@@ -22,6 +23,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "axios": "^1.18.1",
     "bcrypt": "^6.0.0",
     "bonjour-service": "^1.4.1",
     "compression": "^1.8.1",
@@ -40,6 +42,7 @@
     "pino-http": "^11.0.0",
     "playwright-core": "^1.61.0",
     "redis": "^5.8.2",
+    "socks-proxy-agent": "^10.1.0",
     "uuid": "^11.1.0",
     "ws": "^8.21.0",
     "zod": "^4.1.5"

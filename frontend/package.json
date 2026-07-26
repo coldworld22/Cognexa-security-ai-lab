@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node ../scripts/run-frontend-https.mjs",
+    "dev:http": "next dev",
     "dev:https": "node ../scripts/run-frontend-https.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "node ../scripts/run-frontend-start.mjs",
+    "start:http": "node ../scripts/run-frontend-start.mjs --http",
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {

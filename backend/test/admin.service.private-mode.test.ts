@@ -9,9 +9,11 @@ import {
 } from "../src/services/admin/admin.service";
 import {
   CircuitStatus,
+  PrivateModeCapabilities,
   CloakingSession,
   CloakingVerificationResult
 } from "../src/services/private-mode/private-mode.types";
+import { env } from "../src/config/env";
 
 function createActor(): AccessContext {
   return {
@@ -95,12 +97,22 @@ function createVerification(
   };
 }
 
+function createCapabilities(): PrivateModeCapabilities {
+  return {
+    torBackedStrategies: ["tor", "hybrid", "rotating-proxy"],
+    externalTunnelRequiredStrategies: ["vpn-chain"],
+    tlsHandshakeSpoofing: false,
+    requestIdentityProfilesAdjustHeadersOnly: true
+  };
+}
+
 function createAdminService(options: {
   session?: CloakingSession | null;
   verification?: CloakingVerificationResult;
   verificationError?: Error;
 }) {
   const websiteScanCalls: Array<Record<string, unknown>> = [];
+  const deactivationCalls: string[] = [];
 
   const admin = new AdminService(
     {} as never,
@@ -125,8 +137,16 @@ function createAdminService(options: {
     } as never,
     {} as never,
     {} as never,
+    {} as never,
     {
+      getCapabilities: () => createCapabilities(),
       getActiveSession: async () => options.session ?? null,
+      deactivatePrivateMode: async (sessionId: string) => {
+        deactivationCalls.push(`session:${sessionId}`);
+      },
+      deactivateWorkspace: async (workspaceId: string) => {
+        deactivationCalls.push(`workspace:${workspaceId}`);
+      },
       verifyCloaking: async () => {
         if (options.verificationError) {
           throw options.verificationError;
@@ -141,87 +161,168 @@ function createAdminService(options: {
 
   return {
     admin,
-    websiteScanCalls
+    websiteScanCalls,
+    deactivationCalls
   };
 }
 
+async function withHttpsEnabled<T>(
+  value: boolean,
+  callback: () => Promise<T> | T
+): Promise<T> {
+  const previous = env.HTTPS_ENABLED;
+  env.HTTPS_ENABLED = value;
+
+  try {
+    return await callback();
+  } finally {
+    env.HTTPS_ENABLED = previous;
+  }
+}
+
 test("AdminService blocks website scanning when Private Mode is inactive", async () => {
-  const actor = createActor();
-  const { admin, websiteScanCalls } = createAdminService({
-    session: null
+  await withHttpsEnabled(true, async () => {
+    const actor = createActor();
+    const { admin, websiteScanCalls } = createAdminService({
+      session: null
+    });
+
+    await assert.rejects(
+      admin.scanWebsite(actor, {
+        url: "https://example.com"
+      }),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 403 &&
+        error.message ===
+          "Private Mode must be active before using website scanning or security testing modules."
+    );
+
+    assert.equal(websiteScanCalls.length, 0);
   });
-
-  await assert.rejects(
-    admin.scanWebsite(actor, {
-      url: "https://example.com"
-    }),
-    (error: unknown) =>
-      error instanceof AppError &&
-      error.statusCode === 403 &&
-      error.message ===
-        "Private Mode must be active before using website scanning or security testing modules."
-  );
-
-  assert.equal(websiteScanCalls.length, 0);
 });
 
 test("AdminService blocks website scanning when the cloaked route is not verified", async () => {
-  const actor = createActor();
-  const { admin, websiteScanCalls } = createAdminService({
-    session: createSession(),
-    verification: createVerification({
-      isCloaked: false,
-      transportVerified: false,
-      leaks: ["tor_exit_unconfirmed"]
+  await withHttpsEnabled(true, async () => {
+    const actor = createActor();
+    const { admin, websiteScanCalls } = createAdminService({
+      session: createSession(),
+      verification: createVerification({
+        isCloaked: false,
+        transportVerified: false,
+        leaks: ["tor_exit_unconfirmed"]
+      })
     })
+
+    await assert.rejects(
+      admin.scanWebsite(actor, {
+        url: "https://example.com"
+      }),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 403 &&
+        error.message ===
+          "Private Mode must be active and its exit path verified before using website scanning or security testing modules."
+    );
+
+    assert.equal(websiteScanCalls.length, 0);
   });
-
-  await assert.rejects(
-    admin.scanWebsite(actor, {
-      url: "https://example.com"
-    }),
-    (error: unknown) =>
-      error instanceof AppError &&
-      error.statusCode === 403 &&
-      error.message ===
-        "Private Mode must be active and its exit path verified before using website scanning or security testing modules."
-  );
-
-  assert.equal(websiteScanCalls.length, 0);
 });
 
 test("AdminService allows website scanning only after the cloaked route is verified", async () => {
-  const actor = createActor();
-  const { admin, websiteScanCalls } = createAdminService({
-    session: createSession(),
-    verification: createVerification()
-  });
+  await withHttpsEnabled(true, async () => {
+    const actor = createActor();
+    const { admin, websiteScanCalls } = createAdminService({
+      session: createSession(),
+      verification: createVerification()
+    });
 
-  await admin.scanWebsite(actor, {
-    url: "https://example.com"
-  });
+    await admin.scanWebsite(actor, {
+      url: "https://example.com"
+    });
 
-  assert.equal(websiteScanCalls.length, 1);
+    assert.equal(websiteScanCalls.length, 1);
+  });
+});
+
+test("AdminService blocks website scanning over HTTP even when cloaking verifies", async () => {
+  await withHttpsEnabled(false, async () => {
+    const actor = createActor();
+    const { admin, websiteScanCalls } = createAdminService({
+      session: createSession(),
+      verification: createVerification()
+    });
+
+    await assert.rejects(
+      admin.scanWebsite(actor, {
+        url: "https://example.com"
+      }),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.statusCode === 403 &&
+        error.message ===
+          "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before using website scanning or security testing modules."
+    );
+
+    assert.equal(websiteScanCalls.length, 0);
+  });
 });
 
 test("AdminService surfaces route verification state in the private mode session endpoint", async () => {
-  const actor = createActor();
-  const { admin } = createAdminService({
-    session: createSession(),
-    verification: createVerification({
-      isCloaked: false,
-      transportVerified: false,
-      leaks: ["exit_ip_unavailable"]
+  await withHttpsEnabled(true, async () => {
+    const actor = createActor();
+    const { admin } = createAdminService({
+      session: createSession(),
+      verification: createVerification({
+        isCloaked: false,
+        transportVerified: false,
+        leaks: ["exit_ip_unavailable"]
+      })
     })
+
+    const state = (await admin.getPrivateModeSessionState(
+      actor
+    )) as PrivateModeSessionState;
+
+    assert.deepEqual(state.capabilities, createCapabilities());
+    assert.equal(state.session?.id, "session-1");
+    assert.equal(state.circuit?.sessionId, "session-1");
+    assert.equal(state.routeVerified, false);
+    assert.deepEqual(state.verification?.leaks, ["exit_ip_unavailable"]);
+    assert.equal(state.verificationError, null);
+    assert.equal(state.transportSecure, true);
+  });
+});
+
+test("AdminService surfaces the HTTP deployment warning in the private mode session endpoint", async () => {
+  await withHttpsEnabled(false, async () => {
+    const actor = createActor();
+    const { admin } = createAdminService({
+      session: createSession(),
+      verification: createVerification()
+    });
+
+    const state = (await admin.getPrivateModeSessionState(
+      actor
+    )) as PrivateModeSessionState;
+
+    assert.deepEqual(state.capabilities, createCapabilities());
+    assert.equal(state.routeVerified, false);
+    assert.equal(state.transportSecure, false);
+    assert.equal(
+      state.verificationError,
+      "Private Mode verified the exit path, but this deployment is still running over HTTP. Enable HTTPS before using security modules."
+    );
+  });
+});
+
+test("AdminService restores normal mode when deactivating without an active session", async () => {
+  const actor = createActor();
+  const { admin, deactivationCalls } = createAdminService({
+    session: null
   });
 
-  const state = (await admin.getPrivateModeSessionState(
-    actor
-  )) as PrivateModeSessionState;
+  await admin.deactivatePrivateMode(actor);
 
-  assert.equal(state.session?.id, "session-1");
-  assert.equal(state.circuit?.sessionId, "session-1");
-  assert.equal(state.routeVerified, false);
-  assert.deepEqual(state.verification?.leaks, ["exit_ip_unavailable"]);
-  assert.equal(state.verificationError, null);
+  assert.deepEqual(deactivationCalls, ["workspace:workspace-1"]);
 });

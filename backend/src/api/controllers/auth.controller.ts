@@ -1,9 +1,13 @@
 import { Request, Response } from "express";
 
 import { AuthService } from "../../services/auth/auth.service";
+import { CloakingService } from "../../services/private-mode/cloaking.service";
 
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly privateMode: CloakingService
+  ) {}
 
   register = async (_request: Request, response: Response) => {
     const result = await this.auth.register();
@@ -21,9 +25,21 @@ export class AuthController {
   };
 
   session = async (request: Request, response: Response) => {
+    const activeSession = request.auth
+      ? await this.privateMode.getActiveSession(request.auth.workspaceId)
+      : null;
+    const canActivatePrivateMode =
+      request.auth?.permissions?.includes("admin_dashboard") ?? false;
+
     response.json({
       actor: request.auth,
-      permissions: request.auth?.permissions ?? []
+      permissions: request.auth?.permissions ?? [],
+      privateMode: {
+        active: Boolean(activeSession),
+        canActivate: canActivatePrivateMode,
+        activationPath: "/admin/private-mode",
+        blockedPath: "/private-mode-required"
+      }
     });
   };
 

@@ -30,11 +30,16 @@ export interface BrowserCrawlResult {
   duplicatePagesSkipped: number;
 }
 
+export interface BrowserLaunchProxySettings {
+  launchArgs: string[];
+}
+
 export interface BrowserCrawler {
   crawl(input: {
     url: URL;
     maxPages: number;
     ignoreHttpsErrors?: boolean;
+    proxy?: BrowserLaunchProxySettings | null;
   }): Promise<BrowserCrawlResult>;
 }
 
@@ -97,6 +102,7 @@ export class HeadlessBrowserCrawler implements BrowserCrawler {
     url: URL;
     maxPages: number;
     ignoreHttpsErrors?: boolean;
+    proxy?: BrowserLaunchProxySettings | null;
   }): Promise<BrowserCrawlResult> {
     const playwright = await import("playwright-core");
     const browser = await playwright.chromium.launch({
@@ -104,8 +110,12 @@ export class HeadlessBrowserCrawler implements BrowserCrawler {
       headless: true,
       args:
         process.platform === "linux"
-          ? ["--disable-dev-shm-usage", "--no-sandbox"]
-          : ["--disable-dev-shm-usage"]
+          ? [
+              "--disable-dev-shm-usage",
+              "--no-sandbox",
+              ...(input.proxy?.launchArgs ?? [])
+            ]
+          : ["--disable-dev-shm-usage", ...(input.proxy?.launchArgs ?? [])]
     });
 
     const context = await browser.newContext({

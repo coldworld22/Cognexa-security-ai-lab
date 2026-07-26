@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Eye,
   LaptopMinimal,
+  Monitor,
   MonitorSmartphone,
   RefreshCw,
   Router,
@@ -33,11 +34,11 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 
-function statusBadgeClass(status: AdminNetworkEndpoint["status"]) {
+function statusBadgeClass(status: "online" | "offline" | "unverified") {
   switch (status) {
     case "online":
       return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    case "degraded":
+    case "unverified":
       return "border-amber-200 bg-amber-50 text-amber-700";
     default:
       return "border-slate-200 bg-slate-100 text-slate-700";
@@ -71,10 +72,15 @@ export function NetworkMonitorConsole() {
   const [observedEndpoints, setObservedEndpoints] = useState<AdminNetworkEndpoint[]>([]);
   const [currentJob, setCurrentJob] = useState<AdminNetworkJob | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | AdminNetworkEndpoint["status"]>("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "online" | "offline" | "unverified"
+  >("all");
   const [sourceFilter, setSourceFilter] = useState<
     "all" | AdminNetworkEndpoint["resolutionSource"]
   >("all");
+  const [deviceScope, setDeviceScope] = useState<
+    "computers" | "computers_and_candidates" | "all"
+  >("computers_and_candidates");
   const [liveRefresh, setLiveRefresh] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -217,7 +223,22 @@ export function NetworkMonitorConsole() {
     const normalizedSearch = searchTerm.trim().toLowerCase();
 
     return observedEndpoints.filter((endpoint) => {
-      if (statusFilter !== "all" && endpoint.status !== statusFilter) {
+      const category = endpoint.deviceClassification?.category ?? "unknown";
+      if (deviceScope === "computers" && category !== "computer") {
+        return false;
+      }
+      if (
+        deviceScope === "computers_and_candidates" &&
+        category !== "computer" &&
+        category !== "unknown"
+      ) {
+        return false;
+      }
+
+      if (
+        statusFilter !== "all" &&
+        (endpoint.connectivity?.state ?? "unverified") !== statusFilter
+      ) {
         return false;
       }
 
@@ -237,16 +258,28 @@ export function NetworkMonitorConsole() {
         endpoint.interfaceAddress,
         endpoint.macAddress ?? "",
         endpoint.vendor ?? "",
-        endpoint.operatingSystem
+        endpoint.operatingSystem,
+        endpoint.deviceClassification?.category ?? "unknown",
+        endpoint.deviceClassification?.formFactor ?? "unknown"
       ]
         .join(" ")
         .toLowerCase()
         .includes(normalizedSearch);
     });
-  }, [observedEndpoints, searchTerm, sourceFilter, statusFilter]);
+  }, [deviceScope, observedEndpoints, searchTerm, sourceFilter, statusFilter]);
 
-  const onlineCount = observedEndpoints.filter((endpoint) => endpoint.status === "online").length;
-  const offlineCount = observedEndpoints.filter((endpoint) => endpoint.status === "offline").length;
+  const computerEndpoints = observedEndpoints.filter(
+    (endpoint) => endpoint.deviceClassification?.category === "computer"
+  );
+  const laptopCount = computerEndpoints.filter(
+    (endpoint) => endpoint.deviceClassification.formFactor === "laptop"
+  ).length;
+  const desktopCount = computerEndpoints.filter(
+    (endpoint) => endpoint.deviceClassification.formFactor === "desktop"
+  ).length;
+  const candidateCount = observedEndpoints.filter(
+    (endpoint) => endpoint.deviceClassification?.category === "unknown"
+  ).length;
 
   function openRemoteAccess(endpoint: AdminNetworkEndpoint) {
     if (!endpoint.remoteAccess) {
@@ -323,34 +356,34 @@ export function NetworkMonitorConsole() {
         <div className="grid gap-3 md:grid-cols-4">
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              {t("adminNetwork.observedHosts")}
+              {t("adminNetwork.computersDetected")}
             </p>
             <p className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
-              {formatNumber(observedEndpoints.length)}
+              {formatNumber(computerEndpoints.length)}
             </p>
           </div>
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              {t("adminNetwork.onlineHosts")}
+              {t("adminNetwork.laptops")}
             </p>
             <p className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
-              {formatNumber(onlineCount)}
+              {formatNumber(laptopCount)}
             </p>
           </div>
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              {t("adminNetwork.offlineHosts")}
+              {t("adminNetwork.desktops")}
             </p>
             <p className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
-              {formatNumber(offlineCount)}
+              {formatNumber(desktopCount)}
             </p>
           </div>
           <div className="rounded-[22px] border border-black/6 bg-[var(--surface-soft)] p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--text-tertiary)]">
-              {t("adminNetwork.subnetsScanned")}
+              {t("adminNetwork.unclassifiedCandidates")}
             </p>
             <p className="mt-3 text-2xl font-semibold text-[var(--text-primary)]">
-              {formatNumber(scan?.subnets.length ?? 0)}
+              {formatNumber(candidateCount)}
             </p>
           </div>
         </div>
@@ -432,16 +465,31 @@ export function NetworkMonitorConsole() {
           </label>
           <div className="flex flex-wrap gap-2">
             <select
+              value={deviceScope}
+              onChange={(event) =>
+                setDeviceScope(
+                  event.target.value as "computers" | "computers_and_candidates" | "all"
+                )
+              }
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-[var(--text-primary)]"
+            >
+              <option value="computers_and_candidates">{t("adminNetwork.computersAndCandidates")}</option>
+              <option value="computers">{t("adminNetwork.verifiedComputersOnly")}</option>
+              <option value="all">{t("adminNetwork.allDeviceTypes")}</option>
+            </select>
+            <select
               value={statusFilter}
               onChange={(event) =>
-                setStatusFilter(event.target.value as "all" | AdminNetworkEndpoint["status"])
+                setStatusFilter(
+                  event.target.value as "all" | "online" | "offline" | "unverified"
+                )
               }
               className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm text-[var(--text-primary)]"
             >
               <option value="all">{t("adminNetwork.allStatuses")}</option>
               <option value="online">{t("common.status.online")}</option>
-              <option value="degraded">{t("common.status.degraded")}</option>
               <option value="offline">{t("common.status.offline")}</option>
+              <option value="unverified">{t("adminNetwork.connectivityStates.unverified")}</option>
             </select>
             <select
               value={sourceFilter}
@@ -523,7 +571,9 @@ export function NetworkMonitorConsole() {
           <div className="rounded-[20px] border border-dashed border-black/10 bg-[var(--surface-soft)] p-5 text-sm text-[var(--text-secondary)]">
             {observedEndpoints.length === 0
               ? t("adminNetwork.noHosts")
-              : t("adminNetwork.emptySearch")}
+              : deviceScope === "computers" && computerEndpoints.length === 0
+                ? t("adminNetwork.noComputersClassified")
+                : t("adminNetwork.emptySearch")}
           </div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
@@ -543,9 +593,49 @@ export function NetworkMonitorConsole() {
                         : endpoint.ipAddress}
                     </p>
                   </div>
-                  <Badge className={statusBadgeClass(endpoint.status)}>
-                    {t(`common.status.${endpoint.status}`)}
-                  </Badge>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Badge className="border-sky-200 bg-sky-50 text-sky-800">
+                      {endpoint.deviceClassification?.formFactor === "laptop" ? (
+                        <LaptopMinimal className="mr-1 size-3.5" />
+                      ) : (
+                        <Monitor className="mr-1 size-3.5" />
+                      )}
+                      {t(`adminNetwork.formFactors.${endpoint.deviceClassification?.formFactor ?? "unknown"}`)}
+                    </Badge>
+                    <Badge className={statusBadgeClass(endpoint.connectivity?.state ?? "unverified")}>
+                      {t(`adminNetwork.connectivityStates.${endpoint.connectivity?.state ?? "unverified"}`)}
+                    </Badge>
+                  </div>
+                </div>
+
+                <p className="mt-2 text-xs text-[var(--text-tertiary)]">
+                  {t("adminNetwork.statusChecked", {
+                    value: endpoint.connectivity?.checkedAt
+                      ? formatDateTime(endpoint.connectivity.checkedAt)
+                      : t("common.unavailable")
+                  })}
+                </p>
+
+                <div className="mt-4 rounded-[18px] border border-sky-100 bg-sky-50/70 px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-900">
+                      {t("adminNetwork.deviceClassification")}
+                    </p>
+                    <span className="text-xs font-medium text-sky-800">
+                      {t(`adminNetwork.confidence.${endpoint.deviceClassification?.confidence ?? "low"}`)}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-sky-950">
+                    {t(`adminNetwork.deviceCategories.${endpoint.deviceClassification?.category ?? "unknown"}`)} · {t(`adminNetwork.formFactors.${endpoint.deviceClassification?.formFactor ?? "unknown"}`)}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-sky-800">
+                    {endpoint.deviceClassification?.evidence?.join(" · ") ?? t("adminNetwork.insufficientEvidence")}
+                  </p>
+                  {endpoint.deviceClassification?.category === "computer" && endpoint.deviceClassification.formFactor === "unknown" ? (
+                    <p className="mt-2 text-xs font-medium text-amber-800">
+                      {t("adminNetwork.agentNeededForChassis")}
+                    </p>
+                  ) : null}
                 </div>
 
                 {endpoint.remoteAccess ? (

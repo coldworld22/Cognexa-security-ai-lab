@@ -1,4 +1,8 @@
+import { mkdirSync } from "fs";
+import { randomUUID } from "crypto";
+import { extname } from "path";
 import { Router } from "express";
+import multer from "multer";
 import { z } from "zod";
 
 import { authorize } from "../middlewares/authorization.middleware";
@@ -22,6 +26,8 @@ import {
   PRIVATE_MODE_OUTBOUND_STRATEGIES,
   TLS_FINGERPRINT_PROFILES
 } from "../../services/private-mode/private-mode.types";
+import { env } from "../../config/env";
+import { resolveBackendPath } from "../../utils/paths";
 
 export function createAdminRoutes(
   controller: AdminController,
@@ -29,6 +35,30 @@ export function createAdminRoutes(
   authorization: AuthorizationService
 ) {
   const router = Router();
+  const mobileUploadDir = resolveBackendPath(`${env.UPLOADS_PATH}/mobile-scans`);
+  const mobileUpload = multer({
+    storage: multer.diskStorage({
+      destination: (_request, _file, callback) => {
+        mkdirSync(mobileUploadDir, { recursive: true });
+        callback(null, mobileUploadDir);
+      },
+      filename: (_request, file, callback) => {
+        callback(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`);
+      }
+    }),
+    limits: {
+      fileSize: 512 * 1024 * 1024
+    },
+    fileFilter: (_request, file, callback) => {
+      const extension = extname(file.originalname).toLowerCase();
+      if ([".apk", ".ipa", ".aab"].includes(extension)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Only APK, AAB, and IPA files are supported."));
+    }
+  });
   const policyRuleSchema = z.object({
     id: z.string().uuid().optional(),
     category: z.enum(POLICY_CATEGORIES),
@@ -79,6 +109,15 @@ export function createAdminRoutes(
   const securityReviewSchema = z.object({
     url: z.string().trim().min(1),
     maxPages: z.coerce.number().int().min(1).max(10).default(4)
+  });
+  const mobileScanParamsSchema = z.object({
+    scanId: z.string().uuid()
+  });
+  const mobileScanListQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(100).default(25)
+  });
+  const mobileScanExportQuerySchema = z.object({
+    format: z.enum(["json", "pdf"]).default("json")
   });
   const domainVerificationSchema = z.object({
     target: z.string().trim().min(1),
@@ -200,6 +239,52 @@ export function createAdminRoutes(
     }),
     validateBody(securityReviewSchema),
     asyncHandler(controller.runSecurityReview)
+  );
+  router.post(
+    "/mobile-scans",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.mobile-scans",
+      action: "POST /admin/mobile-scans"
+    }),
+    mobileUpload.single("file"),
+    asyncHandler(controller.scanMobileApp)
+  );
+  router.get(
+    "/mobile-scans",
+    authorize(authorization, "admin_dashboard", {
+      resource: "admin.mobile-scans",
+      action: "GET /admin/mobile-scans"
+    }),
+    validateQuery(mobileScanListQuerySchema),
+    asyncHandler(controller.listMobileScans)
+  );
+  router.get(
+    "/mobile-scans/:scanId/export",
+    authorize(authorization, "admin_dashboard", {
+      resource: (request) => `admin.mobile-scans.${request.params.scanId}.export`,
+      action: "GET /admin/mobile-scans/:scanId/export"
+    }),
+    validateParams(mobileScanParamsSchema),
+    validateQuery(mobileScanExportQuerySchema),
+    asyncHandler(controller.exportMobileScan)
+  );
+  router.get(
+    "/mobile-scans/:scanId",
+    authorize(authorization, "admin_dashboard", {
+      resource: (request) => `admin.mobile-scans.${request.params.scanId}`,
+      action: "GET /admin/mobile-scans/:scanId"
+    }),
+    validateParams(mobileScanParamsSchema),
+    asyncHandler(controller.getMobileScan)
+  );
+  router.delete(
+    "/mobile-scans/:scanId",
+    authorize(authorization, "admin_dashboard", {
+      resource: (request) => `admin.mobile-scans.${request.params.scanId}`,
+      action: "DELETE /admin/mobile-scans/:scanId"
+    }),
+    validateParams(mobileScanParamsSchema),
+    asyncHandler(controller.deleteMobileScan)
   );
   router.get(
     "/private-mode/config",
