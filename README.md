@@ -1,5 +1,12 @@
 # Cognexa
 
+[![CI](https://github.com/coldworld22/Cognexa-security-ai-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/coldworld22/Cognexa-security-ai-lab/actions/workflows/ci.yml)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-339933?logo=nodedotjs&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > A self-hosted AI assistant platform using LLMs, RAG, vector search, and a scalable TypeScript backend architecture.
 
 Cognexa is a local-first workspace for engineering and security teams that need an AI assistant they can run on infrastructure they control. It combines streamed chat, document-grounded answers, memory, structured agent tasks, and governed tool execution behind a Next.js application and an Express API.
@@ -260,4 +267,4 @@ Planned community files: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`,
 
 ## License
 
-The backend package declares the MIT license. Add a root-level [`LICENSE`](LICENSE) file before representing the repository as an open-source project or accepting external contributions.
+Released under the [MIT License](LICENSE).
