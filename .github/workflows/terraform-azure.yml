@@ -1,0 +1,27 @@
+name: Terraform (Azure)
+
+on:
+  push:
+    paths:
+      - "infra/azure/**"
+      - ".github/workflows/terraform-azure.yml"
+  pull_request:
+    paths:
+      - "infra/azure/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra/azure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false
+      - run: terraform validate

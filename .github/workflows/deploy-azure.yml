@@ -1,0 +1,62 @@
+name: Deploy to Azure Container Apps
+
+# Started by hand once infra/azure has been applied. See docs/azure.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+env:
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-cognexa' }}
+  ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+  API_APP: ca-cognexa-api
+  WEB_APP: ca-cognexa-web
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sign in to Azure (OIDC, no stored secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to the container registry
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build and push the API image
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/cognexa-api:${GITHUB_SHA}"
+          docker build -f docker/backend/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "API_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy the API
+        run: |
+          az containerapp update -g "$RESOURCE_GROUP" -n "$API_APP" --container-name api --image "$API_IMAGE"
+          API_FQDN=$(az containerapp show -g "$RESOURCE_GROUP" -n "$API_APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "API_URL=https://${API_FQDN}/api/v1" >> "$GITHUB_ENV"
+
+      - name: Build and push the web image
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/cognexa-web:${GITHUB_SHA}"
+          docker build -f docker/frontend/Dockerfile --build-arg NEXT_PUBLIC_API_URL="$API_URL" -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "WEB_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy the web app
+        run: |
+          az containerapp update -g "$RESOURCE_GROUP" -n "$WEB_APP" --container-name web --image "$WEB_IMAGE"
+          echo "Web: https://$(az containerapp show -g "$RESOURCE_GROUP" -n "$WEB_APP" --query properties.configuration.ingress.fqdn -o tsv)"

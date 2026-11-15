@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package.json ./
 COPY frontend ./frontend
 RUN npm install
+# Public API URL is compiled into the browser bundle, so it is set at build time.
+ARG NEXT_PUBLIC_API_URL=""
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build --workspace frontend
 
 FROM node:22-alpine AS runner
