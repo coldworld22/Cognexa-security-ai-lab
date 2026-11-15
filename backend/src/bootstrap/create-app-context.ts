@@ -33,6 +33,7 @@ import { MobileScanResultRepository } from "../database/repositories/mobile-scan
 import { PgVectorStore } from "../rag/vector-stores/pgvector.store";
 import { QdrantVectorStore } from "../rag/vector-stores/qdrant.store";
 import { ProviderFactory } from "../llm/provider-factory";
+import { azureOpenAIBaseUrl } from "../llm/providers/azure-openai.provider";
 import { ToolRegistry } from "../tools/registry/tool-registry";
 import { registerDefaultTools } from "../tools/register-default-tools";
 import { ToolExecutionService } from "../services/tool-execution/tool-execution.service";
@@ -137,9 +138,19 @@ export async function createAppContext(): Promise<AppContext> {
     qdrant: new QdrantVectorStore(env.QDRANT_URL, env.EMBEDDING_DIMENSION)
   };
 
+  const azureOpenAI =
+    env.AZURE_OPENAI_ENDPOINT && env.AZURE_OPENAI_API_KEY
+      ? { endpoint: env.AZURE_OPENAI_ENDPOINT, apiKey: env.AZURE_OPENAI_API_KEY }
+      : undefined;
+
   const providerFactory = new ProviderFactory({
     baseUrl: env.LOCAL_MODEL_BASE_URL,
-    defaultModel: env.DEFAULT_LLM_MODEL
+    defaultModel: env.DEFAULT_LLM_MODEL,
+    defaultProvider: env.DEFAULT_LLM_PROVIDER,
+    azureOpenAI: azureOpenAI && {
+      ...azureOpenAI,
+      deployments: env.AZURE_OPENAI_CHAT_DEPLOYMENTS
+    }
   });
 
   const policy = new PolicyService(
@@ -177,11 +188,20 @@ export async function createAppContext(): Promise<AppContext> {
     authorization
   );
   const embeddingService = new EmbeddingService(
-    new OpenAICompatibleEmbeddingProvider({
-      baseUrl: env.LOCAL_EMBEDDING_BASE_URL,
-      providerId: "openai-compatible",
-      defaultModel: env.DEFAULT_EMBEDDING_MODEL
-    })
+    env.EMBEDDING_PROVIDER === "azure-openai" && azureOpenAI
+      ? new OpenAICompatibleEmbeddingProvider({
+          baseUrl: azureOpenAIBaseUrl(azureOpenAI.endpoint),
+          providerId: "azure-openai",
+          defaultModel: env.AZURE_OPENAI_EMBEDDING_DEPLOYMENT!,
+          headers: { "api-key": azureOpenAI.apiKey },
+          // Keep vectors the size the pgvector column already uses.
+          dimensions: env.EMBEDDING_DIMENSION
+        })
+      : new OpenAICompatibleEmbeddingProvider({
+          baseUrl: env.LOCAL_EMBEDDING_BASE_URL,
+          providerId: "openai-compatible",
+          defaultModel: env.DEFAULT_EMBEDDING_MODEL
+        })
   );
   const retrieval = new RetrievalEngine(vectorStores.primary);
   const retrievalContext = new RetrievalContextService(

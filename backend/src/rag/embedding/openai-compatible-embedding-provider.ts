@@ -7,18 +7,29 @@ interface OpenAICompatibleEmbeddingProviderOptions {
   baseUrl: string;
   providerId: string;
   defaultModel: string;
+  /** Extra request headers, e.g. an API key for hosted endpoints. */
+  headers?: Record<string, string>;
+  /**
+   * Ask the model for vectors of this size. Supported by OpenAI's text-embedding-3 models, which
+   * lets them fit an existing pgvector column (e.g. 768) instead of their native 1536.
+   */
+  dimensions?: number;
 }
 
 export class OpenAICompatibleEmbeddingProvider extends BaseEmbeddingProvider {
   readonly providerId: string;
   private readonly baseUrl: string;
   private readonly defaultModel: string;
+  private readonly headers: Record<string, string>;
+  private readonly dimensions?: number;
 
   constructor(options: OpenAICompatibleEmbeddingProviderOptions) {
     super();
     this.providerId = options.providerId;
     this.baseUrl = options.baseUrl;
     this.defaultModel = options.defaultModel;
+    this.headers = { "Content-Type": "application/json", ...options.headers };
+    this.dimensions = options.dimensions;
   }
 
   async embed(texts: string[]): Promise<EmbeddingVector[]> {
@@ -28,12 +39,11 @@ export class OpenAICompatibleEmbeddingProvider extends BaseEmbeddingProvider {
 
     const response = await fetch(`${this.baseUrl}/embeddings`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: this.headers,
       body: JSON.stringify({
         model: this.defaultModel,
-        input: texts
+        input: texts,
+        ...(this.dimensions ? { dimensions: this.dimensions } : {})
       })
     });
 

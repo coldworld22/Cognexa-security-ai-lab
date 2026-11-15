@@ -3,16 +3,25 @@ import { GemmaProvider } from "./providers/gemma.provider";
 import { LlamaProvider } from "./providers/llama.provider";
 import { MistralProvider } from "./providers/mistral.provider";
 import { QwenProvider } from "./providers/qwen.provider";
+import { AzureOpenAIOptions, AzureOpenAIProvider } from "./providers/azure-openai.provider";
 import { z } from "zod";
 
 interface ProviderFactoryOptions {
   baseUrl: string;
   defaultModel: string;
+  /** Provider used when a request names none or an unknown one. Defaults to qwen. */
+  defaultProvider?: string;
+  /** Registers the hosted Azure OpenAI provider next to the local ones. */
+  azureOpenAI?: AzureOpenAIOptions;
 }
+
+/** Providers whose models come from their own configuration rather than the local Ollama server. */
+const HOSTED_PROVIDERS = new Set(["azure-openai"]);
 
 export class ProviderFactory {
   private readonly providers: Record<string, BaseLLMProvider>;
   private readonly baseUrl: string;
+  private readonly defaultProvider: string;
 
   constructor(options: ProviderFactoryOptions) {
     this.baseUrl = options.baseUrl;
@@ -22,10 +31,19 @@ export class ProviderFactory {
       mistral: new MistralProvider(options.baseUrl, options.defaultModel),
       gemma: new GemmaProvider(options.baseUrl, options.defaultModel)
     };
+
+    if (options.azureOpenAI) {
+      this.providers["azure-openai"] = new AzureOpenAIProvider(options.azureOpenAI);
+    }
+
+    this.defaultProvider =
+      options.defaultProvider && this.providers[options.defaultProvider]
+        ? options.defaultProvider
+        : "qwen";
   }
 
   getProvider(providerId: string): BaseLLMProvider {
-    return this.providers[providerId] ?? this.providers.qwen!;
+    return this.providers[providerId] ?? this.providers[this.defaultProvider]!;
   }
 
   async listProviders() {
@@ -33,7 +51,9 @@ export class ProviderFactory {
 
     return Object.entries(this.providers).map(([id, provider]) => ({
       id,
-      models: installedModels.filter((model) => this.matchesProvider(id, model))
+      models: HOSTED_PROVIDERS.has(id)
+        ? provider.listModels()
+        : installedModels.filter((model) => this.matchesProvider(id, model))
     }));
   }
 

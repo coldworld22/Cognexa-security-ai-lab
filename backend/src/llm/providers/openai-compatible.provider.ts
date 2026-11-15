@@ -13,6 +13,8 @@ interface OpenAICompatibleProviderOptions {
   baseUrl: string;
   defaultModel: string;
   catalog: string[];
+  /** Extra request headers, e.g. an API key for hosted endpoints. */
+  headers?: Record<string, string>;
 }
 
 export class OpenAICompatibleProvider extends BaseLLMProvider {
@@ -20,6 +22,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
   private readonly baseUrl: string;
   private readonly defaultModel: string;
   private readonly catalog: string[];
+  private readonly headers: Record<string, string>;
 
   constructor(options: OpenAICompatibleProviderOptions) {
     super();
@@ -27,6 +30,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     this.baseUrl = options.baseUrl;
     this.defaultModel = options.defaultModel;
     this.catalog = options.catalog;
+    this.headers = { "Content-Type": "application/json", ...options.headers };
   }
 
   listModels() {
@@ -39,9 +43,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: this.headers,
         body: JSON.stringify(payload)
       });
 
@@ -111,9 +113,7 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: this.headers,
         body: JSON.stringify(payload)
       });
 

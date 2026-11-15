@@ -121,8 +121,22 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL: z.string().default("7d"),
   AUTHZ_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   DEFAULT_LLM_PROVIDER: z
-    .enum(["qwen", "llama", "mistral", "gemma"])
+    .enum(["qwen", "llama", "mistral", "gemma", "azure-openai"])
     .default("qwen"),
+  // Azure OpenAI (hosted models). Leave the endpoint empty to run fully local.
+  AZURE_OPENAI_ENDPOINT: optionalEnvValue(z.string().url()),
+  AZURE_OPENAI_API_KEY: optionalEnvValue(z.string().min(1)),
+  AZURE_OPENAI_CHAT_DEPLOYMENTS: z
+    .string()
+    .default("gpt-4o-mini")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0)
+    ),
+  AZURE_OPENAI_EMBEDDING_DEPLOYMENT: optionalEnvValue(z.string().min(1)),
+  EMBEDDING_PROVIDER: z.enum(["local", "azure-openai"]).default("local"),
   DEFAULT_LLM_MODEL: z.string().default("qwen2.5-coder"),
   AUTHORIZED_TESTING_DEV_MODE: z
     .enum(["true", "false"])
@@ -144,6 +158,23 @@ const envSchema = z.object({
   UPLOADS_PATH: z.string().default("../uploads"),
   STARTUP_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(20),
   STARTUP_RETRY_DELAY_MS: z.coerce.number().int().positive().default(3000)
+}).superRefine((value, ctx) => {
+  const usesAzure =
+    value.DEFAULT_LLM_PROVIDER === "azure-openai" || value.EMBEDDING_PROVIDER === "azure-openai";
+  if (usesAzure && (!value.AZURE_OPENAI_ENDPOINT || !value.AZURE_OPENAI_API_KEY)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["AZURE_OPENAI_ENDPOINT"],
+      message: "AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY are required when Azure OpenAI is selected"
+    });
+  }
+  if (value.EMBEDDING_PROVIDER === "azure-openai" && !value.AZURE_OPENAI_EMBEDDING_DEPLOYMENT) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["AZURE_OPENAI_EMBEDDING_DEPLOYMENT"],
+      message: "AZURE_OPENAI_EMBEDDING_DEPLOYMENT is required when EMBEDDING_PROVIDER=azure-openai"
+    });
+  }
 });
 
 export const env = envSchema.parse({
