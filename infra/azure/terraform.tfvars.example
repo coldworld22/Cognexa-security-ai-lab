@@ -1,0 +1,4 @@
+name              = "cognexa"
+location          = "uaenorth"
+openai_location   = "swedencentral"
+github_repository = "coldworld22/Cognexa-security-ai-lab"
