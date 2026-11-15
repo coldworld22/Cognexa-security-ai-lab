@@ -5,6 +5,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-339933?logo=nodedotjs&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)
+![Azure](https://img.shields.io/badge/Azure-OpenAI%20%7C%20Container%20Apps-0078D4?logo=microsoftazure&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > A self-hosted AI assistant platform using LLMs, RAG, vector search, and a scalable TypeScript backend architecture.
@@ -27,7 +28,8 @@ The repository also includes admin-only defensive security workflows. Passive we
 - Streaming multi-conversation chat with selectable providers and models
 - RAG ingestion, chunking, embeddings, retrieval, and document context
 - Workspace-scoped memory, conversations, files, agents, tasks, and tools
-- Pluggable LLM providers for Qwen, Llama, Mistral, Gemma, and generic OpenAI-compatible endpoints
+- Pluggable LLM providers for Qwen, Llama, Mistral, Gemma, generic OpenAI-compatible endpoints, and **Azure OpenAI**
+- Optional Azure deployment: Container Apps, Azure OpenAI, private PostgreSQL with pgvector and Key Vault, all in Terraform ([docs/azure.md](docs/azure.md))
 - `pgvector` as the default vector store; optional Qdrant vector-store implementation
 - PostgreSQL migrations and Redis-backed refresh-token and authorization caching
 - Admin console for policy administration, endpoint/network visibility, Private Mode, and security review workflows
